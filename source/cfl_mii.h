@@ -77,8 +77,8 @@ void CFL_Finalize(void);
 void CFL_EnableSDDebug(bool enable);
 
 void dbglog(const char* fmt, ...);
-void dbglog_err(const char* fmt, ...);
-void dbglog_vram_stats(const char* context, bool onScreen);
+void dbglogErr(const char* fmt, ...);
+void dbglogVramStats(const char* context, bool onScreen);
 
 bool CFL_InitCharModel(CFLCharModel* model, const MiiData* mii, CFLResolution resolution, CFLExpressionFlag expressionFlags);
 

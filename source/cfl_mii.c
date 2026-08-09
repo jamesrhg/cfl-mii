@@ -30,7 +30,7 @@ void dbglog(const char* fmt, ...)
 	va_end(ap);
 }
 
-void dbglog_err(const char* fmt, ...)
+void dbglogErr(const char* fmt, ...)
 {
 	va_list ap;
 	if (s_debugLog) {
@@ -43,11 +43,11 @@ void dbglog_err(const char* fmt, ...)
 	va_end(ap);
 }
 
-void dbglog_vram_stats(const char* context, bool onScreen)
+void dbglogVramStats(const char* context, bool onScreen)
 {
 	u32 free = vramSpaceFree();
 	if (onScreen)
-		dbglog_err("%s: VRAM free = %lu bytes (%.1f KB)\n", context, (unsigned long)free, free / 1024.0f);
+		dbglogErr("%s: VRAM free = %lu bytes (%.1f KB)\n", context, (unsigned long)free, free / 1024.0f);
 	else
 		dbglog("%s: VRAM free = %lu bytes (%.1f KB)\n", context, (unsigned long)free, free / 1024.0f);
 }
@@ -115,169 +115,54 @@ typedef struct {
 
 static u16 rd16(const u8* p) { u16 v; memcpy(&v, p, 2); return v; }
 static u32 rd32(const u8* p) { u32 v; memcpy(&v, p, 4); return v; }
-static u64 rd64(const u8* p) { u64 v; memcpy(&v, p, 8); return v; }
 static s16 rds16(const u8* p) { s16 v; memcpy(&v, p, 2); return v; }
 static float rdf32(const u8* p) { float v; memcpy(&v, p, 4); return v; }
 
-static Result readMiiResourceArchive(void** outBuf, u64* outSize)
+#define CFL_RES_MAX_SIZE 1083400
+static u8 g_cflResBuffer[CFL_RES_MAX_SIZE];
+
+static bool loadMiiResource(u32* outSize)
 {
-	*outBuf = NULL;
-	*outSize = 0;
-
-	u64 tid = 0x0004009B00010202ULL;
-	u32 archivePathData[4] = {
-		(u32)(tid & 0xFFFFFFFF),
-		(u32)((tid >> 32) & 0xFFFFFFFF),
-		MEDIATYPE_NAND,
-		0
-	};
-
-	u32 filePathData[5] = { 0, 0, 0, 0, 0 };
-
-	FS_Path archivePath = { PATH_BINARY, sizeof(archivePathData), archivePathData };
-	FS_Path filePath    = { PATH_BINARY, sizeof(filePathData), filePathData };
-
-	Handle fileHandle;
-	Result rc = FSUSER_OpenFileDirectly(&fileHandle, ARCHIVE_SAVEDATA_AND_CONTENT,
-		archivePath, filePath, FS_OPEN_READ, 0);
+	Result rc = romfsMountFromTitle(0x0004009B00010202ULL, MEDIATYPE_NAND, "$CFLRES");
 	if (R_FAILED(rc)) {
-		dbglog_err("OpenFileDirectly failed: %08lX\n", rc);
-		return rc;
+		dbglogErr("romfsMountFromTitle failed: %08lX\n", rc);
+		return false;
 	}
 
-	u64 size = 0;
-	rc = FSFILE_GetSize(fileHandle, &size);
-	if (R_FAILED(rc) || size == 0) {
-		dbglog_err("GetSize failed: %08lX\n", rc);
-		FSFILE_Close(fileHandle);
-		return R_FAILED(rc) ? rc : -1;
+	FILE* f = fopen("$CFLRES:/CFL_Res.dat", "rb");
+	if (!f) {
+		dbglogErr("Could not open CFL_Res.dat inside the mounted archive.\n");
+		romfsUnmount("$CFLRES");
+		return false;
 	}
 
-	void* buf = malloc(size);
-	if (!buf) {
-		dbglog_err("malloc(%llu) failed\n", size);
-		FSFILE_Close(fileHandle);
-		return -1;
+	fseek(f, 0, SEEK_END);
+	long fileSize = ftell(f);
+	rewind(f);
+
+	if (fileSize <= 0 || (u32)fileSize > sizeof(g_cflResBuffer)) {
+		dbglogErr("CFL_Res.dat size (%ld) is invalid or exceeds the expected maximum (%u).\n",
+			fileSize, (unsigned)sizeof(g_cflResBuffer));
+		fclose(f);
+		romfsUnmount("$CFLRES");
+		return false;
 	}
 
-	u64 offset = 0;
-	const u32 CHUNK = 1 * 1024 * 1024;
-	while (offset < size) {
-		u32 want = (u32)((size - offset) > CHUNK ? CHUNK : (size - offset));
-		u32 got = 0;
-		rc = FSFILE_Read(fileHandle, &got, offset, (u8*)buf + offset, want);
-		if (R_FAILED(rc)) {
-			dbglog_err("Read failed at %llu: %08lX\n", offset, rc);
-			free(buf);
-			FSFILE_Close(fileHandle);
-			return rc;
-		}
-		if (got == 0) break;
-		offset += got;
+	size_t got = fread(g_cflResBuffer, 1, (size_t)fileSize, f);
+	fclose(f);
+	romfsUnmount("$CFLRES");
+
+	if (got != (size_t)fileSize) {
+		dbglogErr("Short read on CFL_Res.dat: got %zu of %ld bytes\n", got, fileSize);
+		return false;
 	}
 
-	FSFILE_Close(fileHandle);
-
-	if (offset != size) {
-		dbglog("Short read: got %llu of %llu\n", offset, size);
-		free(buf);
-		return -1;
-	}
-
-	*outBuf = buf;
-	*outSize = size;
-	return 0;
-}
-
-static bool romfsNameMatchesAscii(const u8* utf16le, u32 byteLen, const char* ascii)
-{
-	u32 charCount = byteLen / 2;
-	size_t asciiLen = strlen(ascii);
-	if (charCount != asciiLen) return false;
-	for (u32 i = 0; i < charCount; i++) {
-		u16 c; memcpy(&c, utf16le + i * 2, 2);
-		if (c != (u16)(unsigned char)ascii[i]) return false;
-	}
+	dbglog("Loaded CFL_Res.dat: %ld bytes\n", fileSize);
+	*outSize = (u32)fileSize;
 	return true;
 }
 
-static bool romfsTryParseLevel3(const u8* buf, u64 imageSize, u64 lvl3Offset,
-	const char* filename, const u8** outData, u32* outSize)
-{
-	if (lvl3Offset + 0x28 > imageSize) return false;
-	const u8* lvl3 = buf + lvl3Offset;
-
-	u32 headerLen   = rd32(lvl3 + 0x00);
-	u32 dirMetaOff  = rd32(lvl3 + 0x0C);
-	u32 dirMetaLen  = rd32(lvl3 + 0x10);
-	u32 fileMetaOff = rd32(lvl3 + 0x1C);
-	u32 fileMetaLen = rd32(lvl3 + 0x20);
-	u32 fileDataOff = rd32(lvl3 + 0x24);
-
-	if (headerLen != 0x28) return false;
-	u64 remaining = imageSize - lvl3Offset;
-	if ((u64)dirMetaOff + 0x18 > remaining || (u64)dirMetaOff + dirMetaLen > remaining) return false;
-	if ((u64)fileMetaOff + fileMetaLen > remaining) return false;
-	if ((u64)fileDataOff > remaining) return false;
-
-	const u8* root = lvl3 + dirMetaOff + 0;
-	u32 firstFileOff = rd32(root + 0x0C);
-
-	u32 cur = firstFileOff;
-	u32 guard = 0;
-	while (cur != 0xFFFFFFFF) {
-		if (++guard > 4096) return false;
-		if ((u64)fileMetaOff + cur + 0x20 > remaining) return false;
-		const u8* entry = lvl3 + fileMetaOff + cur;
-
-		u64 dataOffset  = rd64(entry + 0x08);
-		u64 dataLength  = rd64(entry + 0x10);
-		u32 nextSibling = rd32(entry + 0x04);
-		u32 nameLen     = rd32(entry + 0x1C);
-
-		if ((u64)fileMetaOff + cur + 0x20 + nameLen > remaining) return false;
-		const u8* name = entry + 0x20;
-
-		if (romfsNameMatchesAscii(name, nameLen, filename)) {
-			u64 abs = lvl3Offset + fileDataOff + dataOffset;
-			if (abs + dataLength > imageSize) return false;
-			*outData = buf + abs;
-			*outSize = (u32)dataLength;
-			return true;
-		}
-
-		cur = nextSibling;
-	}
-
-	return false;
-}
-
-static bool romfsFindRootFile(const void* romfsImage, u64 imageSize,
-	const char* filename, const u8** outData, u32* outSize)
-{
-	*outData = NULL;
-	*outSize = 0;
-
-	const u8* buf = (const u8*)romfsImage;
-
-	dbglog("romfs: image size = %llu bytes\n", imageSize);
-
-	if (imageSize >= 4 && memcmp(buf, "IVFC", 4) == 0 && imageSize >= 0x5C) {
-		u64 lvl3Offset = rd64(buf + 0x3C);
-		dbglog("romfs: IVFC header present, level3 offset=%llu\n", lvl3Offset);
-		if (romfsTryParseLevel3(buf, imageSize, lvl3Offset, filename, outData, outSize))
-			return true;
-	}
-
-	dbglog("romfs: trying buffer as a bare level-3 image (offset 0)\n");
-	if (romfsTryParseLevel3(buf, imageSize, 0, filename, outData, outSize))
-		return true;
-
-	dbglog("romfs: could not locate '%s'\n", filename);
-	return false;
-}
-
-static bool find_item(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex,
+static bool findItem(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex,
 	const u8** outItem, u32* outItemRemaining)
 {
 	if (size < 4 + 20 * 4 || sectionIndex >= 20) return false;
@@ -340,14 +225,14 @@ static bool find_item(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex,
 	return true;
 }
 
-static u32 item_prefix_size(u32 sectionIndex)
+static u32 itemPrefixSize(u32 sectionIndex)
 {
 	if (sectionIndex == CFL_SECTION_FACE) return 0x24;
 	if (sectionIndex == CFL_SECTION_HAIR) return 0x48;
 	return 0;
 }
 
-static bool geom_header_valid(u16 C, u16 N, u16 T, u16 I)
+static bool geomHeaderValid(u16 C, u16 N, u16 T, u16 I)
 {
 	if (C < 3 || C > 4096) return false;
 	if (!(N == 0 || N == 1 || N == C)) return false;
@@ -356,7 +241,7 @@ static bool geom_header_valid(u16 C, u16 N, u16 T, u16 I)
 	return true;
 }
 
-static bool parse_geometry(const u8* geom, u32 remaining, CFLModel* out)
+static bool parseGeometry(const u8* geom, u32 remaining, CFLModel* out)
 {
 	if (remaining < 8) return false;
 
@@ -367,7 +252,7 @@ static bool parse_geometry(const u8* geom, u32 remaining, CFLModel* out)
 
 	dbglog("  geom header: C=%u N=%u T=%u I=%u\n", C, N, T, I);
 
-	if (!geom_header_valid(C, N, T, I)) return false;
+	if (!geomHeaderValid(C, N, T, I)) return false;
 
 	const u8* p = geom + 8;
 	const u8* end = geom + remaining;
@@ -467,7 +352,7 @@ static bool parse_geometry(const u8* geom, u32 remaining, CFLModel* out)
 	return true;
 }
 
-static bool cfl_res_load_model(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex,
+static bool loadResModel(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex,
 	CFLFaceAnchors* outAnchors, CFLModel* out)
 {
 	memset(out, 0, sizeof(*out));
@@ -475,7 +360,7 @@ static bool cfl_res_load_model(const u8* data, u32 size, u32 sectionIndex, u32 i
 
 	const u8* item;
 	u32 itemRemaining;
-	if (!find_item(data, size, sectionIndex, itemIndex, &item, &itemRemaining))
+	if (!findItem(data, size, sectionIndex, itemIndex, &item, &itemRemaining))
 		return false;
 
 	dbglog("  item remaining=%lu bytes, first bytes:", (unsigned long)itemRemaining);
@@ -497,8 +382,8 @@ static bool cfl_res_load_model(const u8* data, u32 size, u32 sectionIndex, u32 i
 		outAnchors->goatee[2] = rdf32(item + 0x20);
 	}
 
-	u32 prefix = item_prefix_size(sectionIndex);
-	if (itemRemaining > prefix && parse_geometry(item + prefix, itemRemaining - prefix, out)) {
+	u32 prefix = itemPrefixSize(sectionIndex);
+	if (itemRemaining > prefix && parseGeometry(item + prefix, itemRemaining - prefix, out)) {
 		if (sectionIndex == CFL_SECTION_MASK && out->texcoords && out->vertexCount > 0) {
 			float uMin = out->texcoords[0], uMax = out->texcoords[0];
 			float vMin = out->texcoords[1], vMax = out->texcoords[1];
@@ -521,7 +406,7 @@ static bool cfl_res_load_model(const u8* data, u32 size, u32 sectionIndex, u32 i
 	return false;
 }
 
-static void cfl_res_free_model(CFLModel* model)
+static void freeResModel(CFLModel* model)
 {
 	free(model->positions);
 	free(model->normals);
@@ -530,13 +415,13 @@ static void cfl_res_free_model(CFLModel* model)
 	memset(model, 0, sizeof(*model));
 }
 
-static bool cfl_res_load_texture(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex, CFLTexture* out)
+static bool loadResTexture(const u8* data, u32 size, u32 sectionIndex, u32 itemIndex, CFLTexture* out)
 {
 	memset(out, 0, sizeof(*out));
 
 	const u8* item;
 	u32 itemRemaining;
-	if (!find_item(data, size, sectionIndex, itemIndex, &item, &itemRemaining))
+	if (!findItem(data, size, sectionIndex, itemIndex, &item, &itemRemaining))
 		return false;
 
 	if (itemRemaining < 8) {
@@ -861,13 +746,13 @@ static void loadPart(CFLCharModel* cm, const u8* cflData, u32 cflSize, u32 secti
 	const float translate[3], float partScale, bool flipX, const float color[3], bool noSpecular, const char* label)
 {
 	CFLModel model;
-	if (!cfl_res_load_model(cflData, cflSize, section, itemIndex, NULL, &model)) {
+	if (!loadResModel(cflData, cflSize, section, itemIndex, NULL, &model)) {
 		dbglog("(no %s at section %lu item %lu)\n", label, (unsigned long)section, (unsigned long)itemIndex);
 		return;
 	}
 	dbglog("%s: %lu verts, %lu indices\n", label, (unsigned long)model.vertexCount, (unsigned long)model.indexCount);
 	addPart(cm, &model, translate, partScale, flipX, color, noSpecular);
-	cfl_res_free_model(&model);
+	freeResModel(&model);
 }
 
 static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
@@ -876,13 +761,13 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 	const float solidFallback[3], bool depthWrite, bool noSpecular, const char* label)
 {
 	CFLModel model;
-	if (!cfl_res_load_model(cflData, cflSize, modelSection, modelIndex, NULL, &model)) {
+	if (!loadResModel(cflData, cflSize, modelSection, modelIndex, NULL, &model)) {
 		dbglog("(no %s at section %lu item %lu)\n", label, (unsigned long)modelSection, (unsigned long)modelIndex);
 		return;
 	}
 
 	CFLTexture tex;
-	if (!cfl_res_load_texture(cflData, cflSize, texSection, texIndex, &tex)) {
+	if (!loadResTexture(cflData, cflSize, texSection, texIndex, &tex)) {
 		if (solidFallback) {
 			dbglog("(no %s texture at section %lu item %lu, rendering solid-colored)\n",
 				label, (unsigned long)texSection, (unsigned long)texIndex);
@@ -891,12 +776,12 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 			dbglog("(no %s texture at section %lu item %lu, skipping canvas too)\n",
 				label, (unsigned long)texSection, (unsigned long)texIndex);
 		}
-		cfl_res_free_model(&model);
+		freeResModel(&model);
 		return;
 	}
 
 	if (cm->partCount >= CFL_MAX_PARTS || model.vertexCount == 0) {
-		cfl_res_free_model(&model);
+		freeResModel(&model);
 		return;
 	}
 
@@ -923,7 +808,7 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 		part->useIndices = false;
 		part->vertexCount -= part->vertexCount % 3;
 	}
-	cfl_res_free_model(&model);
+	freeResModel(&model);
 
 	u32 mWidth = 1; while (mWidth < tex.width) mWidth <<= 1;
 	u32 mHeight = 1; while (mHeight < tex.height) mHeight <<= 1;
@@ -1366,7 +1251,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		if (mii->mole_details.enable) {
 			d = (MaskPartsDesc){ { molePosX, molePosY }, { moleScale, moleScale }, 0.0f, MASK_ORIGIN_CENTER };
 			C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ONE_MINUS_SRC_ALPHA);
-			if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_MOLE, 1, &tex))
+			if (loadResTexture(cflData, cflSize, CFL_SECTION_MOLE, 1, &tex))
 				drawMaskDecal(&d, &tex, moleColor);
 			C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_MAX, GPU_ONE_MINUS_DST_ALPHA, GPU_DST_ALPHA, GPU_ONE, GPU_ONE);
 		}
@@ -1375,32 +1260,32 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		bool flipVR = (types->eyeR == 4 || types->eyeR == 5);
 		bool flipVL = (types->eyeL == 4 || types->eyeL == 5);
 		d = (MaskPartsDesc){ { 32.0f - eyeSpacingX, eyePosY }, { eyeScaleX, eyeScaleYBase }, eyeRotateR, MASK_ORIGIN_RIGHT };
-		if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_EYE, eyeRIndex, &tex))
+		if (loadResTexture(cflData, cflSize, CFL_SECTION_EYE, eyeRIndex, &tex))
 			drawDualColorDecal(&d, &tex, eyeColor0, eyeColors1[eyeColorIndex], GPU_TEVOP_RGB_SRC_B, GPU_TEVOP_RGB_SRC_G, flipVR);
 
 		d = (MaskPartsDesc){ { eyeSpacingX + 32.0f, eyePosY }, { eyeScaleX, eyeScaleYBase }, 360.0f - eyeRotateLBase, MASK_ORIGIN_LEFT };
-		if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_EYE, eyeLIndex, &tex))
+		if (loadResTexture(cflData, cflSize, CFL_SECTION_EYE, eyeLIndex, &tex))
 			drawDualColorDecal(&d, &tex, eyeColor0, eyeColors1[eyeColorIndex], GPU_TEVOP_RGB_SRC_B, GPU_TEVOP_RGB_SRC_G, flipVL);
 
 		d = (MaskPartsDesc){ { 32.0f - eyebrowSpacingX, eyebrowPosY }, { eyebrowScaleX, eyebrowScaleY }, eyebrowRotate, MASK_ORIGIN_RIGHT };
-		if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_EYEBROW, mii->eyebrow_details.style, &tex))
+		if (loadResTexture(cflData, cflSize, CFL_SECTION_EYEBROW, mii->eyebrow_details.style, &tex))
 			drawMaskDecal(&d, &tex, hairColors[eyebrowColorIndex]);
 
 		d = (MaskPartsDesc){ { eyebrowSpacingX + 32.0f, eyebrowPosY }, { eyebrowScaleX, eyebrowScaleY }, 360.0f - eyebrowRotate, MASK_ORIGIN_LEFT };
-		if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_EYEBROW, mii->eyebrow_details.style, &tex))
+		if (loadResTexture(cflData, cflSize, CFL_SECTION_EYEBROW, mii->eyebrow_details.style, &tex))
 			drawMaskDecal(&d, &tex, hairColors[eyebrowColorIndex]);
 
 		d = (MaskPartsDesc){ { 32.0f, mouthPosY }, { mouthScaleX, mouthScaleY }, 0.0f, MASK_ORIGIN_CENTER };
-		if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_MOUTH, mouthIndex, &tex))
+		if (loadResTexture(cflData, cflSize, CFL_SECTION_MOUTH, mouthIndex, &tex))
 			drawDualColorDecal(&d, &tex, mouthColors0[mouthColorIndex], mouthColors1[mouthColorIndex], GPU_TEVOP_RGB_SRC_G, GPU_TEVOP_RGB_SRC_B, false);
 
 		if (mii->mustache_details.mustache_style != 0) {
 			d = (MaskPartsDesc){ { 32.0f, mustachePosY }, { mustacheScaleX, mustacheScaleY }, 0.0f, MASK_ORIGIN_RIGHT };
-			if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_MUSTACHE, mii->mustache_details.mustache_style, &tex))
+			if (loadResTexture(cflData, cflSize, CFL_SECTION_MUSTACHE, mii->mustache_details.mustache_style, &tex))
 				drawMaskDecal(&d, &tex, hairColors[beardColorIndex]);
 
 			d = (MaskPartsDesc){ { 32.0f, mustachePosY }, { mustacheScaleX, mustacheScaleY }, 0.0f, MASK_ORIGIN_LEFT };
-			if (cfl_res_load_texture(cflData, cflSize, CFL_SECTION_MUSTACHE, mii->mustache_details.mustache_style, &tex))
+			if (loadResTexture(cflData, cflSize, CFL_SECTION_MUSTACHE, mii->mustache_details.mustache_style, &tex))
 				drawMaskDecal(&d, &tex, hairColors[beardColorIndex]);
 		}
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
@@ -1466,15 +1351,15 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 		static const float wrinkleColor[3] = { 0.0f, 0.0f, 0.0f };
 
 		if (mii->face_details.makeup != 0 &&
-			cfl_res_load_texture(cflData, cflSize, CFL_SECTION_FACET_MAKE, mii->face_details.makeup, &tex))
+			loadResTexture(cflData, cflSize, CFL_SECTION_FACET_MAKE, mii->face_details.makeup, &tex))
 			drawFullCanvasDecal(&tex, white);
 
 		if (mii->face_details.wrinkles != 0 &&
-			cfl_res_load_texture(cflData, cflSize, CFL_SECTION_FACET_LINE, mii->face_details.wrinkles, &tex))
+			loadResTexture(cflData, cflSize, CFL_SECTION_FACET_LINE, mii->face_details.wrinkles, &tex))
 			drawFullCanvasDecal(&tex, wrinkleColor);
 
 		if (mii->beard_details.style > 3 &&
-			cfl_res_load_texture(cflData, cflSize, CFL_SECTION_FACET_BEARD, mii->beard_details.style - 3, &tex))
+			loadResTexture(cflData, cflSize, CFL_SECTION_FACET_BEARD, mii->beard_details.style - 3, &tex))
 			drawFullCanvasDecal(&tex, hairColors[beardColorIndex]);
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
 	C3D_FrameEnd(0);
@@ -1493,34 +1378,19 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 }
 
 
-static void* g_archiveBuf;
 static const u8* g_cflData;
 static u32 g_cflSize;
 
 bool CFL_Initialize(void)
 {
 	dbglog("Opening CFL_Res.dat system archive...\n");
-	void* romBuf = NULL;
-	u64 romSize = 0;
-	Result rc = readMiiResourceArchive(&romBuf, &romSize);
-	if (R_FAILED(rc)) {
-		dbglog_err("Failed to open the Mii resource archive (%08lX).\n", rc);
+	u32 cflSize = 0;
+	if (!loadMiiResource(&cflSize)) {
 		dbglog("This needs full ARM11 FS permissions - make sure you're\n");
 		dbglog("launching via Luma3DS/Rosalina's homebrew launcher.\n");
 		return false;
 	}
-	dbglog("Got RomFS image: %llu bytes\n", romSize);
-
-	const u8* cflData = NULL;
-	u32 cflSize = 0;
-	if (!romfsFindRootFile(romBuf, romSize, "CFL_Res.dat", &cflData, &cflSize)) {
-		dbglog_err("Could not find CFL_Res.dat inside the archive.\n");
-		free(romBuf);
-		return false;
-	}
-	dbglog("Found CFL_Res.dat: %lu bytes\n", (unsigned long)cflSize);
-	g_archiveBuf = romBuf;
-	g_cflData = cflData;
+	g_cflData = g_cflResBuffer;
 	g_cflSize = cflSize;
 
 	vshader_dvlb = DVLB_ParseFile((u32*)vshader_shbin, vshader_shbin_size);
@@ -1566,8 +1436,6 @@ void CFL_Finalize(void)
 {
 	shaderProgramFree(&program);
 	DVLB_Free(vshader_dvlb);
-	free(g_archiveBuf);
-	g_archiveBuf = NULL;
 	g_cflData = NULL;
 	g_cflSize = 0;
 }
@@ -1596,7 +1464,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 
 	CFL_RebindShader();
 
-	dbglog_vram_stats("CFL_InitCharModel start", false);
+	dbglogVramStats("CFL_InitCharModel start", false);
 
 	clearParts(cm);
 	cm->valid = false;
@@ -1635,9 +1503,9 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	CFLFaceAnchors anchors;
 	{
 		CFLModel faceModel;
-		if (!cfl_res_load_model(cflData, cflSize, CFL_SECTION_FACE, mii.face_style.shape, &anchors, &faceModel)) {
-			dbglog_err("\nFailed to parse the face model.\n");
-			dbglog_vram_stats("CFL_InitCharModel face model parse failure", true);
+		if (!loadResModel(cflData, cflSize, CFL_SECTION_FACE, mii.face_style.shape, &anchors, &faceModel)) {
+			dbglogErr("\nFailed to parse the face model.\n");
+			dbglogVramStats("CFL_InitCharModel face model parse failure", true);
 			return false;
 		}
 		dbglog("Face: %lu verts, %lu indices (hair anchor %.2f %.2f %.2f)\n",
@@ -1646,12 +1514,12 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		if (!buildFaceTexture(cm, cflData, cflSize, &mii, &faceModel))
 			addPart(cm, &faceModel, NULL, 1.0f, false, skinColors[skinIndex], false);
 		logNormalLightStats("FACE", &faceModel);
-		cfl_res_free_model(&faceModel);
+		freeResModel(&faceModel);
 	}
 
 	{
 		CFLModel canvasModel;
-		if (cfl_res_load_model(cflData, cflSize, CFL_SECTION_MASK, mii.face_style.shape, NULL, &canvasModel)) {
+		if (loadResModel(cflData, cflSize, CFL_SECTION_MASK, mii.face_style.shape, NULL, &canvasModel)) {
 			int requestedCount = 0, bakedCount = 0;
 			u32 vramBeforeBakes = vramSpaceFree();
 			dbglog("CFL_InitCharModel: VRAM free before baking = %lu bytes (%.1f KB)\n", (unsigned long)vramBeforeBakes, vramBeforeBakes / 1024.0f);
@@ -1664,8 +1532,8 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 					cm->maskTexBaked[i] = true;
 					bakedCount++;
 				} else {
-					dbglog_err("CFL_InitCharModel: FAILED to bake MASK for expression %s (likely VRAM exhaustion)\n", CFL_GetExpressionName((CFLExpression)i));
-					dbglog_vram_stats("  at failure", true);
+					dbglogErr("CFL_InitCharModel: FAILED to bake MASK for expression %s (likely VRAM exhaustion)\n", CFL_GetExpressionName((CFLExpression)i));
+					dbglogVramStats("  at failure", true);
 				}
 			}
 			u32 vramAfterBakes = vramSpaceFree();
@@ -1673,20 +1541,20 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 			dbglog("CFL_InitCharModel: VRAM free after baking = %lu bytes (%.1f KB) - this model's %d successfully baked MASK texture(s) used ~%lu bytes (%.1f KB)\n",
 				(unsigned long)vramAfterBakes, vramAfterBakes / 1024.0f, bakedCount, (unsigned long)vramUsedByBakes, vramUsedByBakes / 1024.0f);
 			if (bakedCount < requestedCount) {
-				dbglog_err("CFL_InitCharModel: only %d/%d requested expressions baked successfully\n", bakedCount, requestedCount);
+				dbglogErr("CFL_InitCharModel: only %d/%d requested expressions baked successfully\n", bakedCount, requestedCount);
 			} else {
 				dbglog("CFL_InitCharModel: all %d requested expressions baked successfully\n", requestedCount);
 			}
 			if (cm->maskTexBaked[startExpr]) {
 				cm->maskPartIndex = addTexturedPart(cm, &canvasModel, NULL, 1.0f, false, &cm->maskTexForExpr[startExpr], false);
 				if (cm->maskPartIndex < 0)
-					dbglog_err("CFL_InitCharModel: too many parts already, MASK not attached (still pre-baked, unused)\n");
+					dbglogErr("CFL_InitCharModel: too many parts already, MASK not attached (still pre-baked, unused)\n");
 			} else {
-				dbglog_err("CFL_InitCharModel: starting expression %s failed to bake, MASK will be missing\n", CFL_GetExpressionName(startExpr));
+				dbglogErr("CFL_InitCharModel: starting expression %s failed to bake, MASK will be missing\n", CFL_GetExpressionName(startExpr));
 			}
-			cfl_res_free_model(&canvasModel);
+			freeResModel(&canvasModel);
 		} else {
-			dbglog_err("(no face canvas at section %lu item %u, skipping MASK entirely)\n",
+			dbglogErr("(no face canvas at section %lu item %u, skipping MASK entirely)\n",
 				(unsigned long)CFL_SECTION_MASK, mii.face_style.shape);
 		}
 	}
@@ -1751,7 +1619,7 @@ bool CFL_SetExpression(CFLCharModel* cm, CFLExpression expression)
 		return false;
 	}
 	if (!cm->maskTexBaked[expression]) {
-		dbglog_err("CFL_SetExpression: %s was requested but failed to bake during InitCharModel - ignored\n",
+		dbglogErr("CFL_SetExpression: %s was requested but failed to bake during InitCharModel - ignored\n",
 			CFL_GetExpressionName(expression));
 		return false;
 	}
