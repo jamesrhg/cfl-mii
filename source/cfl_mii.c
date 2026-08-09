@@ -4,10 +4,53 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
 
 #include "cfl_mii.h"
 #include "vshader_shbin.h"
-#include "dbglog.h"
+
+static FILE* s_debugLog = NULL;
+
+void CFL_EnableSDDebug(bool enable)
+{
+	if (enable) {
+		if (!s_debugLog) s_debugLog = fopen("sdmc:/3ds/cfl_test.txt", "w");
+	} else if (s_debugLog) {
+		fclose(s_debugLog);
+		s_debugLog = NULL;
+	}
+}
+
+void dbglog(const char* fmt, ...)
+{
+	if (!s_debugLog) return;
+	va_list ap;
+	va_start(ap, fmt);
+	vfprintf(s_debugLog, fmt, ap);
+	va_end(ap);
+}
+
+void dbglog_err(const char* fmt, ...)
+{
+	va_list ap;
+	if (s_debugLog) {
+		va_start(ap, fmt);
+		vfprintf(s_debugLog, fmt, ap);
+		va_end(ap);
+	}
+	va_start(ap, fmt);
+	vprintf(fmt, ap);
+	va_end(ap);
+}
+
+void dbglog_vram_stats(const char* context, bool onScreen)
+{
+	u32 free = vramSpaceFree();
+	if (onScreen)
+		dbglog_err("%s: VRAM free = %lu bytes (%.1f KB)\n", context, (unsigned long)free, free / 1024.0f);
+	else
+		dbglog("%s: VRAM free = %lu bytes (%.1f KB)\n", context, (unsigned long)free, free / 1024.0f);
+}
 
 
 #define CFL_SECTION_GOATEE      0
@@ -1744,30 +1787,36 @@ CFLShaderLocations CFL_GetShaderLocations(void)
 	return loc;
 }
 
-static C3D_LightEnv s_iconLightEnv;
-static C3D_Light s_iconLight;
-static C3D_LightLut s_iconSpecularLut;
-static bool s_iconLightReady = false;
+static C3D_LightEnv s_defaultLightEnv;
+static C3D_Light s_defaultLight;
+static C3D_LightLut s_defaultSpecularLut;
+static bool s_defaultLightReady = false;
 
-static void ensureIconLightInit(void)
+static void ensureDefaultShaderInit(void)
 {
-	if (s_iconLightReady) return;
-	s_iconLightReady = true;
-	C3D_LightEnvInit(&s_iconLightEnv);
-	C3D_LightEnvAmbient(&s_iconLightEnv, 0.0f, 0.0f, 0.0f);
-	LightLut_Phong(&s_iconSpecularLut, 8.0f);
-	C3D_LightEnvLut(&s_iconLightEnv, GPU_LUT_D0, GPU_LUTINPUT_NH, false, &s_iconSpecularLut);
-	C3D_LightInit(&s_iconLight, &s_iconLightEnv);
+	if (s_defaultLightReady) return;
+	s_defaultLightReady = true;
+	C3D_LightEnvInit(&s_defaultLightEnv);
+	C3D_LightEnvAmbient(&s_defaultLightEnv, 0.0f, 0.0f, 0.0f);
+	LightLut_Phong(&s_defaultSpecularLut, 8.0f);
+	C3D_LightEnvLut(&s_defaultLightEnv, GPU_LUT_D0, GPU_LUTINPUT_NH, false, &s_defaultSpecularLut);
+	C3D_LightInit(&s_defaultLight, &s_defaultLightEnv);
 	C3D_FVec lightDir = FVec4_New(-0.53906f, 0.53906f, 0.64697f, 0.0f);
-	C3D_LightPosition(&s_iconLight, &lightDir);
-	C3D_LightAmbient(&s_iconLight, 1.0f, 1.0f, 1.0f);
-	C3D_LightDiffuse(&s_iconLight, 1.0f, 1.0f, 1.0f);
-	C3D_LightSpecular0(&s_iconLight, 0.99608f, 0.99608f, 0.99608f);
-	C3D_LightSpecular1(&s_iconLight, 0.0f, 0.0f, 0.0f);
-	C3D_LightEnable(&s_iconLight, true);
+	C3D_LightPosition(&s_defaultLight, &lightDir);
+	C3D_LightAmbient(&s_defaultLight, 1.0f, 1.0f, 1.0f);
+	C3D_LightDiffuse(&s_defaultLight, 1.0f, 1.0f, 1.0f);
+	C3D_LightSpecular0(&s_defaultLight, 0.99608f, 0.99608f, 0.99608f);
+	C3D_LightSpecular1(&s_defaultLight, 0.0f, 0.0f, 0.0f);
+	C3D_LightEnable(&s_defaultLight, true);
 }
 
-static void uploadIconMaterialColor(const float color[3], bool noSpecular)
+void CFL_BindDefaultShader(void)
+{
+	ensureDefaultShaderInit();
+	C3D_LightEnvBind(&s_defaultLightEnv);
+}
+
+void CFL_SetDefaultMaterial(const float color[3], bool noSpecular)
 {
 	static const float kShadowColor[3] = { 0.10196f, 0.09020f, 0.07843f };
 	C3D_Material mtl;
@@ -1780,13 +1829,13 @@ static void uploadIconMaterialColor(const float color[3], bool noSpecular)
 	mtl.specular0[0] = mtl.specular0[1] = mtl.specular0[2] = spec;
 	mtl.specular1[0] = mtl.specular1[1] = mtl.specular1[2] = 0.0f;
 	mtl.emission[0] = mtl.emission[1] = mtl.emission[2] = 0.0f;
-	C3D_LightEnvMaterial(&s_iconLightEnv, &mtl);
+	C3D_LightEnvMaterial(&s_defaultLightEnv, &mtl);
 }
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon)
 {
 	if (!cm || !cm->valid || cm->partCount == 0 || iconSize <= 0 || !outIcon) return false;
-	ensureIconLightInit();
+	ensureDefaultShaderInit();
 
 	if (!C3D_TexInitVRAM(outIcon, iconSize, iconSize, GPU_RGBA8)) {
 		dbglog("CFL_CommandMakeModelIcon: C3D_TexInitVRAM failed (%dx%d)\n", iconSize, iconSize);
@@ -1841,7 +1890,7 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 		C3D_SetViewport(0, 0, iconSize, iconSize);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, &iconProjection);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  &iconModelView);
-		if (!customCallback) C3D_LightEnvBind(&s_iconLightEnv);
+		if (!customCallback) C3D_LightEnvBind(&s_defaultLightEnv);
 		C3D_CullFace(GPU_CULL_NONE);
 
 		{
@@ -1888,7 +1937,7 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 				if (customCallback) {
 					customCallback(customArgument, part, &iconProjection, &iconModelView);
 				} else {
-					uploadIconMaterialColor(part->color, part->noSpecular);
+					CFL_SetDefaultMaterial(part->color, part->noSpecular);
 
 					C3D_TexEnv* env = C3D_GetTexEnv(0);
 					if (part->hasTexture) {

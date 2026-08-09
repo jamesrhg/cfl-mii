@@ -74,6 +74,12 @@ bool CFL_Initialize(void);
 
 void CFL_Finalize(void);
 
+void CFL_EnableSDDebug(bool enable);
+
+void dbglog(const char* fmt, ...);
+void dbglog_err(const char* fmt, ...);
+void dbglog_vram_stats(const char* context, bool onScreen);
+
 bool CFL_InitCharModel(CFLCharModel* model, const MiiData* mii, CFLResolution resolution, CFLExpressionFlag expressionFlags);
 
 void CFL_DestroyCharModel(CFLCharModel* model);
@@ -93,6 +99,9 @@ typedef struct {
 } CFLShaderLocations;
 
 CFLShaderLocations CFL_GetShaderLocations(void);
+
+void CFL_BindDefaultShader(void);
+void CFL_SetDefaultMaterial(const float color[3], bool noSpecular);
 
 void CFL_RebindShader(void);
 
