@@ -119,7 +119,7 @@ static s16 rds16(const u8* p) { s16 v; memcpy(&v, p, 2); return v; }
 static float rdf32(const u8* p) { float v; memcpy(&v, p, 4); return v; }
 
 #define CFL_RES_MAX_SIZE 1083400
-static u8 g_cflResBuffer[CFL_RES_MAX_SIZE];
+static u8* g_cflResBuffer;
 
 static bool loadMiiResource(u32* outSize)
 {
@@ -140,24 +140,34 @@ static bool loadMiiResource(u32* outSize)
 	long fileSize = ftell(f);
 	rewind(f);
 
-	if (fileSize <= 0 || (u32)fileSize > sizeof(g_cflResBuffer)) {
+	if (fileSize <= 0 || fileSize > CFL_RES_MAX_SIZE) {
 		dbglogErr("CFL_Res.dat size (%ld) is invalid or exceeds the expected maximum (%u).\n",
-			fileSize, (unsigned)sizeof(g_cflResBuffer));
+			fileSize, (unsigned)CFL_RES_MAX_SIZE);
 		fclose(f);
 		romfsUnmount("$CFLRES");
 		return false;
 	}
 
-	size_t got = fread(g_cflResBuffer, 1, (size_t)fileSize, f);
+	u8* buf = (u8*)malloc((size_t)fileSize);
+	if (!buf) {
+		dbglogErr("malloc(%ld) failed for the Mii resource buffer.\n", fileSize);
+		fclose(f);
+		romfsUnmount("$CFLRES");
+		return false;
+	}
+
+	size_t got = fread(buf, 1, (size_t)fileSize, f);
 	fclose(f);
 	romfsUnmount("$CFLRES");
 
 	if (got != (size_t)fileSize) {
 		dbglogErr("Short read on CFL_Res.dat: got %zu of %ld bytes\n", got, fileSize);
+		free(buf);
 		return false;
 	}
 
 	dbglog("Loaded CFL_Res.dat: %ld bytes\n", fileSize);
+	g_cflResBuffer = buf;
 	*outSize = (u32)fileSize;
 	return true;
 }
@@ -507,6 +517,12 @@ static const float favoriteColors[12][3] = {
 	{ 0.878f, 0.878f, 0.878f },
 	{ 0.094f, 0.094f, 0.078f },
 };
+
+const float* CFL_GetFavoriteColor(u8 index)
+{
+	if (index > 11) index = 11;
+	return favoriteColors[index];
+}
 
 static const int cflToGpuFormat[14] = {
 	GPU_L4, GPU_L8, GPU_A4, GPU_A8, GPU_LA4, GPU_LA8, GPU_HILO8,
@@ -1381,6 +1397,43 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 static const u8* g_cflData;
 static u32 g_cflSize;
 
+bool CFL_IsAvailable(void)
+{
+	return g_cflData != NULL;
+}
+
+static u16 cflComputeCRC16(u16 seed, const u8* data, u32 size)
+{
+	u32 crc = seed;
+	for (u32 i = 0; i < size; i++) {
+		for (int bit = 0; bit < 8; bit++)
+			crc = (crc & 0x8000) ? ((0x1021 ^ (crc << 1)) & 0xFFFF) : ((crc << 1) & 0xFFFF);
+		crc ^= data[i];
+	}
+	return (u16)crc;
+}
+
+bool CFL_MakeStoreData(const MiiData* mii, CFLStoreData* out)
+{
+	if (!mii || !out) return false;
+	memcpy(&out->miiData, mii, sizeof(MiiData));
+	out->pad[0] = 0;
+	out->pad[1] = 0;
+	u8* crcBytes = (u8*)out + (sizeof(CFLStoreData) - 2);
+	crcBytes[0] = 0;
+	crcBytes[1] = 0;
+	u16 crc = cflComputeCRC16(0, (const u8*)out, sizeof(CFLStoreData));
+	crcBytes[0] = (u8)(crc >> 8);
+	crcBytes[1] = (u8)(crc & 0xFF);
+	return true;
+}
+
+bool CFL_IsStoreDataValid(const CFLStoreData* storeData)
+{
+	if (!storeData) return false;
+	return cflComputeCRC16(0, (const u8*)storeData, sizeof(CFLStoreData)) == 0;
+}
+
 bool CFL_Initialize(void)
 {
 	dbglog("Opening CFL_Res.dat system archive...\n");
@@ -1436,6 +1489,8 @@ void CFL_Finalize(void)
 {
 	shaderProgramFree(&program);
 	DVLB_Free(vshader_dvlb);
+	free(g_cflResBuffer);
+	g_cflResBuffer = NULL;
 	g_cflData = NULL;
 	g_cflSize = 0;
 }
@@ -1495,7 +1550,6 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	u8 hairColorIndex = mii.hair_details.color;
 	if (hairColorIndex >= 8) hairColorIndex = 0;
 	u8 favColorIndex = mii.mii_details.shirt_color;
-	if (favColorIndex >= 12) favColorIndex = 0;
 
 	u32 hairIndex = (u32)mii.hair_style * 2;
 	dbglog("Hair index: rawStyle=%u -> %lu\n", mii.hair_style, (unsigned long)hairIndex);
@@ -1561,7 +1615,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 
 	loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_CAP, hairIndex, CFL_SECTION_CAPTEX, mii.hair_style,
 		anchors.hair, 1.0f, mii.hair_details.flip != 0,
-		favoriteColors[favColorIndex], NULL, true, false, "Cap");
+		CFL_GetFavoriteColor(favColorIndex), NULL, true, false, "Cap");
 
 	loadPart(cm, cflData, cflSize, CFL_SECTION_HAIR, hairIndex, anchors.hair, 1.0f, mii.hair_details.flip != 0,
 		hairColors[hairColorIndex], false, "Hair");
@@ -1741,9 +1795,7 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 			((u32)(setting->bgColor[2] * 255.0f) << 8)  |
 			(u32)(setting->bgColor[3] * 255.0f);
 	} else if (bgType == CFL_ICON_BG_FAVORITE) {
-		u8 favColorIndex = cm->mii.mii_details.shirt_color;
-		if (favColorIndex >= 12) favColorIndex = 0;
-		const float* fc = favoriteColors[favColorIndex];
+		const float* fc = CFL_GetFavoriteColor(cm->mii.mii_details.shirt_color);
 		clearColor = ((u32)(fc[0] * 255.0f) << 24) | ((u32)(fc[1] * 255.0f) << 16) | ((u32)(fc[2] * 255.0f) << 8) | 0xFF;
 	}
 
