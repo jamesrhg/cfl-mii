@@ -78,6 +78,7 @@ void CFL_Finalize(void);
 
 void CFL_EnableSDDebug(bool enable);
 
+
 void dbglog(const char* fmt, ...);
 void dbglogErr(const char* fmt, ...);
 void dbglogVramStats(const char* context, bool onScreen);
@@ -85,17 +86,30 @@ void dbglogVramStats(const char* context, bool onScreen);
 bool CFL_MakeStoreData(const MiiData* mii, CFLStoreData* out);
 bool CFL_IsStoreDataValid(const CFLStoreData* storeData);
 
+bool CFL_SearchOfficialData(const MiiData* mii, u16* outIndex);
+
+bool CFL_IsAvailableOfficialData(u16 index);
+bool CFL_GetOfficialData(u16 index, MiiData* outMii);
+int CFL_GetAvailableOfficialDataNum(void);
+
+bool CFL_GetMyMiiIndex(u16* outIndex);
+
+
+int CFL_GetWorkSize(bool hdModeEnabled);
+
 const float* CFL_GetFavoriteColor(u8 index);
 
 bool CFL_InitCharModel(CFLCharModel* model, const MiiData* mii, CFLResolution resolution, CFLExpressionFlag expressionFlags);
 
-void CFL_DestroyCharModel(CFLCharModel* model);
+void CFL_DeleteModel(CFLCharModel* model);
 
 bool CFL_HasCharModel(const CFLCharModel* model);
 
 bool CFL_SetExpression(CFLCharModel* model, CFLExpression expression);
 CFLExpression CFL_GetExpression(const CFLCharModel* model);
 const char* CFL_GetExpressionName(CFLExpression expression);
+
+bool CFL_IsAvailableExpression(const CFLCharModel* model, CFLExpression expression);
 
 int CFL_GetPartCount(const CFLCharModel* model);
 const CFLPart* CFL_GetPart(const CFLCharModel* model, int index);

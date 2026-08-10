@@ -7,31 +7,14 @@ It opens the console's system `CFL_Res.dat` Mii resource archive,
 parses it, and builds a fully-shaded, textured 3D character model
 (head, hair, face, eyes, eyebrows, mouth, nose, glasses, facial hair)
 from a `MiiData` struct - the same data libctru's Mii Selector applet
-hands you.
+hands you. It can also search/read the console's real Mii database
+(`CFL_DB.dat`) and encode/decode the standard `CFLStoreData` exchange
+format.
 
-## API surface
-
-- `CFL_Initialize` / `CFL_Finalize` - open the archive, set up shared
-  GPU state.
-- `CFL_InitCharModel` / `CFL_DestroyCharModel` - build/tear down one
-  character model instance.
-- `CFL_SetExpression` / `CFL_GetExpression` - swap between pre-baked
-  facial expressions.
-- `CFL_GetPartCount` / `CFL_GetPart` - the model's own draw data
-  (vertex/index buffers, textures, material hints) for the caller to
-  render however it likes - this library never issues its own
-  real-time draw calls.
-- `CFL_BindDefaultShader` / `CFL_SetDefaultMaterial` - optional default
-  shading (matching real FFL's `FFLDefaultShader`) an app can use
-  instead of writing its own `C3D_LightEnv`/material setup.
-- `CFL_CommandMakeModelIcon` - renders a single model + expression to
-  an offscreen square icon texture, matching the real function's own
-  camera and depth-range. Accepts a `CFLIconSetting` for background/
-  custom shading control.
-- `CFL_EnableSDDebug` - toggles this library's own `sdmc:/3ds/cfl_test.txt`
-  debug log (off by default).
-
-See `source/cfl_mii.h` for the full API and struct layout.
+Reverse-engineered from a retail 3DS title binary's debug info and
+cross-referenced against the real, compiled RFL (Wii) and FFL (Wii U)
+Mii libraries - real function/type/constant names throughout, not
+invented ones, wherever the decompile could confirm them.
 
 ## Building
 
@@ -39,9 +22,359 @@ This is a source library, not a standalone app - it has no `main()`.
 Add `source/` to a devkitARM 3DS project's `SOURCES`/`INCLUDES` and
 link against `citro3d`/`ctru`.
 
+## Design
+
+- **Instance-based.** `CFLCharModel` is a plain, caller-owned struct
+  (`CFLCharModel model = {0};` on the stack, in an array, wherever) -
+  this library never allocates one itself, only fills in one you
+  already own. Hold as many as you want at once.
+- **Data only, not drawing.** `CFL_InitCharModel` builds vertex/index
+  buffers and baked textures; it never issues a draw call. Real CFL
+  doesn't either (confirmed via the decompile) - rendering (camera,
+  blend/depth state, draw order, lighting) is entirely your own job.
+  `CFL_GetPartCount`/`CFL_GetPart` hand you the built data; an optional
+  default shader (`CFL_BindDefaultShader`/`CFL_SetDefaultMaterial`) is
+  there if you don't want to write your own. The one deliberate
+  exception is `CFL_CommandMakeModelIcon`, which really does render (a
+  real function whose whole job is producing a picture).
+- **`bool`, not `CFLResult`.** Real CFL returns a `CFLResult` enum this
+  project never captured the exact values of; every function here
+  returns `bool` instead (`true` = success) to avoid guessing at
+  error-code semantics on top of everything else.
+
+## API reference
+
+### Lifecycle
+
+```c
+bool CFL_Initialize(void);
+void CFL_Finalize(void);
+bool CFL_IsAvailable(void);
+void CFL_EnableSDDebug(bool enable);
+```
+
+- **`CFL_Initialize()`** - call once, after `C3D_Init()`. Opens the
+  system `CFL_Res.dat` archive, sets up the shared shader/vertex
+  attributes every `CFL_InitCharModel` call needs, and caches the
+  console's real Mii database (`CFL_DB.dat`) if one exists. Returns
+  `false` if the archive can't be opened - almost always means the app
+  wasn't launched with full ARM11 filesystem permissions (launch via
+  Luma3DS/Rosalina's homebrew launcher, not a plain 3dsx loader).
+- **`CFL_Finalize()`** - call once, after destroying every
+  `CFLCharModel`, before `C3D_Fini()`. Frees the shader program and
+  the archive buffer.
+- **`CFL_IsAvailable()`** - `true` once `CFL_Initialize` has succeeded
+  and `CFL_Finalize` hasn't been called since. Cheap to check anywhere.
+- **`CFL_EnableSDDebug(true/false)`** - opens/closes this library's own
+  `sdmc:/3ds/cfl_test.txt` diagnostic log (off by default). Useful
+  while developing - every archive-parse and model-build step logs
+  what it's doing and why a part was skipped, if one was.
+
+### Character models
+
+```c
+typedef struct {
+    CFLPart parts[CFL_MAX_PARTS];
+    int partCount;
+    MiiData mii;
+    bool valid;
+    // ...
+} CFLCharModel;
+
+bool CFL_InitCharModel(CFLCharModel* model, const MiiData* mii,
+                        CFLResolution resolution, CFLExpressionFlag expressionFlags);
+void CFL_DeleteModel(CFLCharModel* model);
+bool CFL_HasCharModel(const CFLCharModel* model);
+```
+
+- **`CFL_InitCharModel(model, mii, resolution, expressionFlags)`** -
+  builds a full character model (face, mask, hair, cap, goatee, nose,
+  glasses - everything this library knows how to render) from a real
+  `MiiData` (the same struct libctru's Mii Selector applet returns).
+  `model` must be zero-initialized before its *first* use (`= {0}`,
+  `memset`, or plain static/global storage) - every call after that is
+  always safe, since `CFL_InitCharModel` tears down whatever `model`
+  previously held before rebuilding it, so calling it again on the
+  same instance with a different Mii is the normal way to "change"
+  a model.
+  `resolution` is one of the `CFL_RESOLUTION_*` constants below and
+  controls only the eye/eyebrow/mouth/mustache/mole decal canvas -
+  `expressionFlags` (`CFL_EXPRESSION_FLAG(e)` OR'd together, or
+  `CFL_EXPRESSION_FLAG_ALL`) declares up front which facial
+  expressions this model will ever need; one texture is pre-baked per
+  requested expression, so switching later is instant. **Real memory
+  cost to plan around**: each baked expression texture is
+  `resolution * resolution * 4` bytes - requesting every expression at
+  a high resolution for several simultaneous models is a real way to
+  exhaust VRAM on original-model 3DS hardware. Request only what you
+  need. Returns `false` only if the face itself couldn't be built (or
+  `CFL_Initialize` was never called); every other part is optional and
+  silently skipped on failure (check the SD log via
+  `CFL_EnableSDDebug(true)` if a Mii is missing a part you expected).
+  **Real side effect, matching real CFL exactly**: a successful build
+  also adds the Mii to the console's real "recently seen" Mii list
+  (skipped automatically if it's already in your saved collection) -
+  this is what real `CFL_InitCharModel` does too, not something this
+  library adds on top.
+- **`CFL_DeleteModel(model)`** - frees every part and every pre-baked
+  expression texture `model` owns. Safe on a zeroed or already-deleted
+  instance. `CFL_InitCharModel` already calls this internally before
+  rebuilding, so you only need to call it yourself for explicit
+  cleanup (e.g. before the instance's own storage - a stack frame, a
+  freed array slot - goes away).
+- **`CFL_HasCharModel(model)`** - `true` once `CFL_InitCharModel` has
+  successfully built at least the face.
+
+```c
+typedef int CFLResolution;
+#define CFL_RESOLUTION_64   64
+#define CFL_RESOLUTION_128  128
+#define CFL_RESOLUTION_256  256
+#define CFL_RESOLUTION_512  512
+#define CFL_RESOLUTION_1024 1024
+```
+
+### Expressions
+
+```c
+typedef enum {
+    CFL_EXPRESSION_NORMAL = 0, CFL_EXPRESSION_SMILE, CFL_EXPRESSION_ANGER,
+    CFL_EXPRESSION_SORROW, CFL_EXPRESSION_SURPRISE, CFL_EXPRESSION_BLINK,
+    CFL_EXPRESSION_OPENMOUTH, CFL_EXPRESSION_SMILE_OM, CFL_EXPRESSION_ANGER_OM,
+    CFL_EXPRESSION_SORROW_OM, CFL_EXPRESSION_SURPRISE_OM, CFL_EXPRESSION_BLINK_OM,
+    CFL_EXPRESSION_WINK_L, CFL_EXPRESSION_WINK_R, CFL_EXPRESSION_WINK_L_OM,
+    CFL_EXPRESSION_WINK_R_OM, CFL_EXPRESSION_LIKE_WINK_L, CFL_EXPRESSION_LIKE_WINK_R,
+    CFL_EXPRESSION_FRUSTRATED, CFL_EXPRESSION_COUNT
+} CFLExpression;
+
+#define CFL_EXPRESSION_FLAG(e) (1u << (u32)(e))
+#define CFL_EXPRESSION_FLAG_ALL ((1u << CFL_EXPRESSION_COUNT) - 1u)
+
+bool CFL_SetExpression(CFLCharModel* model, CFLExpression expression);
+CFLExpression CFL_GetExpression(const CFLCharModel* model);
+const char* CFL_GetExpressionName(CFLExpression expression);
+bool CFL_IsAvailableExpression(const CFLCharModel* model, CFLExpression expression);
+```
+
+- **`CFL_SetExpression(model, expr)`** - switches the model's bound
+  MASK texture. `expr` must have been included in `expressionFlags` at
+  `CFL_InitCharModel` time *and* have baked successfully - check
+  `CFL_IsAvailableExpression` first if you're not sure (see
+  [Validation](#validation-checklist) below). Instant - no GPU work
+  beyond a texture rebind, no rebuild.
+- **`CFL_GetExpression(model)`** - the currently-bound expression.
+- **`CFL_GetExpressionName(expr)`** - a plain C string (`"Normal"`,
+  `"Smile"`, ...), handy for debug overlays.
+- **`CFL_IsAvailableExpression(model, expr)`** - `true` if `expr` can
+  be switched to *right now* (requested **and** successfully baked -
+  a request can still fail per-expression under VRAM pressure).
+
+### Render data
+
+```c
+typedef struct {
+    void* vbo; void* ibo;
+    u32 vertexCount, indexCount;
+    bool useIndices;
+    float color[3];
+    bool hasTexture;
+    C3D_Tex tex;
+    bool needsTint;      // true: multiply `color` in. false: texture RGB is already correct.
+    bool isAlphaOnly;    // true: REPLACE with `color` for RGB. false: MODULATE by texture RGB.
+    bool depthWrite;     // false for decal overlays (MASK, nose canvas) sitting on another part.
+    bool noSpecular;     // true for flat 2D overlays that read wrong with a specular highlight.
+} CFLPart;
+
+int CFL_GetPartCount(const CFLCharModel* model);
+const CFLPart* CFL_GetPart(const CFLCharModel* model, int index);
+
+typedef struct { int projection; int modelView; } CFLShaderLocations;
+CFLShaderLocations CFL_GetShaderLocations(void);
+void CFL_RebindShader(void);
+```
+
+- **`CFL_GetPartCount`/`CFL_GetPart`** - the built model as a plain
+  array of draw-ready parts. Loop over them and draw however you like
+  (see the rendering example below for the exact TEV/blend setup this
+  library's own parts expect - `needsTint`/`isAlphaOnly` specifically
+  matter, getting them backwards silently discards real texture detail
+  or tints the wrong thing).
+- **`CFL_GetShaderLocations()`** - the shared vertex shader's
+  `projection`/`modelView` uniform locations, so you can upload your
+  own camera matrices each frame. This library has no opinion on
+  lighting or camera - those are entirely your choice, same as real
+  CFL (confirmed via RFL's own real source: each game supplies its own
+  light values, the library never fixes one).
+- **`CFL_RebindShader()`** - **call this once per frame, before
+  drawing any `CFLPart`, if you also use citro2d (or anything else
+  that touches the active shader/attribute state) anywhere in the same
+  frame.** citro2d's own `C2D_Prepare()`/text calls silently rebind
+  their own default shader; without re-binding this library's own
+  shader afterward, every subsequent `CFLPart` draw call breaks. Not
+  needed in a citro3d-only app (the binding sticks for the whole
+  program).
+
+### Default shader (optional)
+
+```c
+void CFL_BindDefaultShader(void);
+void CFL_SetDefaultMaterial(const float color[3], bool noSpecular);
+```
+
+A ready-made shading implementation you can use instead of writing
+your own `C3D_LightEnv`/material setup - matching real FFL's own
+`FFLDefaultShader` role (a convenience the library provides, never
+forced). `CFL_BindDefaultShader()` once per frame before drawing any
+part with it; `CFL_SetDefaultMaterial(part->color, part->noSpecular)`
+once per part, right before its draw call. Nothing else in this
+library depends on either being called - build your own lighting from
+scratch if you want different shading.
+
+### Icon rendering
+
+```c
+typedef enum {
+    CFL_ICON_BG_FAVORITE = 0,  // fill with the Mii's own favorite color
+    CFL_ICON_BG_DIRECT = 1,    // fill with setting->bgColor
+    CFL_ICON_BG_NO_CLEAR = 2,  // don't clear the canvas at all
+} CFLIconBGType;
+
+typedef void (*CFLIconCustomCallback)(void* customArgument, const CFLPart* part,
+                                       const C3D_Mtx* projection, const C3D_Mtx* modelView);
+
+typedef struct {
+    CFLIconBGType bgType;
+    float bgColor[4];                     // used when bgType == CFL_ICON_BG_DIRECT
+    CFLIconCustomCallback customCallback;  // NULL = use this library's own default shading
+    void* customArgument;
+} CFLIconSetting;
+
+bool CFL_CommandMakeModelIcon(CFLCharModel* model, CFLExpression expression,
+                               int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon);
+```
+
+Real CFL function (`CFL_CommandMakeModelIcon`, DWARF-confirmed), and
+the one real exception to "CFL doesn't draw" - its whole job is
+producing a rendered square texture, using real CFL's own fixed icon
+camera (not customizable). `expression` must be one of the bits
+declared at `CFL_InitCharModel` time; if it wasn't successfully baked,
+the icon falls back to whichever expression is currently bound rather
+than failing (this function never mutates `model`). `setting` may be
+`NULL` for plain defaults. On success you own `*outIcon` and must
+`C3D_TexDelete` it when done - same as any other `C3D_Tex` this
+library hands back.
+
+### Mii database access
+
+```c
+bool CFL_SearchOfficialData(const MiiData* mii, u16* outIndex);
+bool CFL_IsAvailableOfficialData(u16 index);
+bool CFL_GetOfficialData(u16 index, MiiData* outMii);
+int  CFL_GetAvailableOfficialDataNum(void);
+bool CFL_GetMyMiiIndex(u16* outIndex);
+```
+
+Real, read-only access to the console's own Mii database
+(`CFL_DB.dat`, the same 100-slot store Mii Maker/the Mii Selector use)
+- cached once at `CFL_Initialize` time, matching real CFL's own real
+init order. **All of these can legitimately fail** if the console has
+never had Mii Maker opened (no database file exists yet) - always
+check the return value, don't assume the database is there.
+
+- **`CFL_SearchOfficialData(mii, &index)`** - find a specific Mii's
+  real slot (0-99) by identity (Mii ID + creator MAC, not by name).
+  This is the real mechanism games use to make the Mii Selector applet
+  reopen on the Mii it last showed (`miiSelectorSetInitialIndex`).
+- **`CFL_IsAvailableOfficialData(index)`** - does this raw slot
+  (0-99) hold a Mii at all?
+- **`CFL_GetOfficialData(index, &mii)`** - fetch the actual `MiiData`
+  at a slot.
+- **`CFL_GetAvailableOfficialDataNum()`** - how many of the 100 slots
+  are occupied. Returns `-1` if the database isn't available at all
+  (distinct from a real `0`, which means "database exists, but
+  empty").
+- **`CFL_GetMyMiiIndex(&index)`** - the console owner's own Mii index.
+  Returns `false` (with `*outIndex` still set to `0`) if unavailable -
+  a caller that doesn't check the return sees the same "default to 0"
+  behavior real CFL's own callers would, but checking it tells you
+  whether that `0` is real.
+
+### Store data (export/import)
+
+```c
+bool CFL_MakeStoreData(const MiiData* mii, CFLStoreData* out);
+bool CFL_IsStoreDataValid(const CFLStoreData* storeData);
+```
+
+`CFLStoreData` (libctru's own real struct, `<3ds/mii.h>`) is the
+standard checksummed wrapper Miis are exchanged in (QR codes,
+StreetPass, NFC) - `{ MiiData miiData; u8 pad[2]; u16 crc16; }`.
+`CFL_MakeStoreData` computes the real CRC16-CCITT self-check (zero the
+checksum field, CRC the whole 96-byte structure including the zeroed
+field, write the result back) and fills `out`. `CFL_IsStoreDataValid`
+re-runs that same check and confirms it comes out to `0` - use this on
+any `CFLStoreData` you didn't just create yourself (e.g. one decoded
+from a QR code or received over StreetPass) before trusting its
+`miiData` field.
+
+### Utility
+
+```c
+const float* CFL_GetFavoriteColor(u8 index);
+int CFL_GetWorkSize(bool hdModeEnabled);
+void dbglog(const char* fmt, ...);
+void dbglogErr(const char* fmt, ...);
+void dbglogVramStats(const char* context, bool onScreen);
+```
+
+- **`CFL_GetFavoriteColor(index)`** - the real 12-entry favorite-color
+  table as an `{r,g,b}` float triple. Out-of-range indices clamp to
+  the last entry (11/black), matching real CFL's own real behavior -
+  not a fallback to index 0.
+- **`CFL_GetWorkSize(hdModeEnabled)`** - informational only (this
+  library manages its own citro3d allocations, it never takes real
+  CFL's memory-arena parameters) - shows what real CFL's own work
+  buffer would have needed for the same operation.
+- **`dbglog`/`dbglogErr`/`dbglogVramStats`** - printf-style logging
+  into the log `CFL_EnableSDDebug` opens - `dbglogErr` also prints to
+  the bottom-screen console, for genuine failures worth surfacing
+  immediately.
+
+## Validation checklist
+
+Real, easy-to-hit failure cases this library reports rather than
+crashing on - check these rather than assuming success:
+
+- **`CFL_Initialize()` can fail** - almost always missing ARM11 FS
+  permissions. Don't call anything else in this library if it returns
+  `false`.
+- **`CFL_InitCharModel` can partially fail** - it only returns `false`
+  if the face itself couldn't be built; every other part (hair, cap,
+  goatee, nose, glasses, and each individual pre-baked expression) can
+  silently fail on its own (most commonly VRAM exhaustion from
+  requesting too many expressions/too high a resolution across too
+  many simultaneous models). Check `CFL_HasCharModel` for the
+  minimum-viable case, and the SD log (`CFL_EnableSDDebug(true)`) for
+  exactly what got skipped.
+- **`CFL_SetExpression` fails silently on an unavailable expression**
+  (wrong flag, or that one failed to bake) - it leaves the current
+  expression alone rather than doing anything destructive, but check
+  `CFL_IsAvailableExpression` first if your UI needs to know in
+  advance whether a switch will work.
+- **Every `CFL_*OfficialData` function can fail if Mii Maker has never
+  been opened on this console** - there's no `CFL_DB.dat` to read yet.
+  This is a normal, expected state (common on a fresh console/emulator
+  profile), not an error to alarm the user over.
+- **`CFL_IsStoreDataValid` before trusting any `CFLStoreData` you
+  didn't create yourself** - a corrupted or malformed QR code/NFC tag
+  should never be fed straight into `CFL_InitCharModel` unchecked.
+- **`CFLCharModel` must be zero-initialized before its first use** -
+  static/global storage already gets this for free from C; a stack
+  variable needs `= {0}` explicitly.
+
 ## Examples
 
-Both of these compile and link as-is against nothing but this library,
+All of these compile and link as-is against nothing but this library,
 libctru, and citro3d - no other project files needed.
 
 ### Rendering a CharModel with the default shader
@@ -153,7 +486,15 @@ int main(void)
 	miiSelectorLaunch(&conf, &ret);
 
 	CFLCharModel model = {0}; // must be zero-initialized before first use
-	CFL_InitCharModel(&model, &ret.mii, CFL_RESOLUTION_256, CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL));
+	if (!CFL_InitCharModel(&model, &ret.mii, CFL_RESOLUTION_256, CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL))) {
+		// Face itself failed to build - CFL_Initialize probably didn't
+		// succeed, or the archive is missing/corrupt. Bail out rather
+		// than drawing a model with no parts.
+		CFL_Finalize();
+		C3D_Fini();
+		gfxExit();
+		return 1;
+	}
 
 	C3D_Mtx projection;
 	Mtx_PerspTilt(&projection, C3D_AngleFromDegrees(50.0f), C3D_AspectRatioTop, 0.01f, 1000.0f, false);
@@ -171,11 +512,118 @@ int main(void)
 		C3D_FrameEnd(0);
 	}
 
-	CFL_DestroyCharModel(&model);
+	CFL_DeleteModel(&model);
 	CFL_Finalize();
 	C3D_Fini();
 	gfxExit();
 	return 0;
+}
+```
+
+### Multiple simultaneous models
+
+`CFLCharModel` is a plain caller-owned struct, so holding several at
+once is just an array - no special API needed:
+
+```c
+#define MAX_MII 4
+static CFLCharModel models[MAX_MII] = {0}; // zero-initialized: static storage
+static int modelCount = 0;
+
+static bool addMii(const MiiData* mii)
+{
+	if (modelCount >= MAX_MII) return false;
+	// A lower resolution and a smaller expression set here keeps VRAM
+	// usage sane across several simultaneous models - see the
+	// CFL_InitCharModel docs above for the real per-expression cost.
+	if (!CFL_InitCharModel(&models[modelCount], mii, CFL_RESOLUTION_64,
+	                        CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL))) {
+		return false;
+	}
+	modelCount++;
+	return true;
+}
+
+// ...later, in your draw loop: just loop over models[0..modelCount) and
+// draw each with drawModel() from the example above, at a different
+// world-space offset per model.
+```
+
+### Switching expressions
+
+```c
+// Requested up front at CFL_InitCharModel time:
+CFL_InitCharModel(&model, &mii, CFL_RESOLUTION_128,
+                   CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL) |
+                   CFL_EXPRESSION_FLAG(CFL_EXPRESSION_SMILE)  |
+                   CFL_EXPRESSION_FLAG(CFL_EXPRESSION_SURPRISE));
+
+// ...later, an instant switch - no rebuild:
+if (CFL_IsAvailableExpression(&model, CFL_EXPRESSION_SMILE)) {
+	CFL_SetExpression(&model, CFL_EXPRESSION_SMILE);
+} else {
+	// Wasn't requested above, or failed to bake (VRAM pressure) -
+	// CFL_GetExpression(&model) still reflects whatever's actually shown.
+}
+```
+
+### Listing every Mii saved on the console
+
+```c
+int total = CFL_GetAvailableOfficialDataNum();
+if (total < 0) {
+	// No CFL_DB.dat at all - Mii Maker has never been opened on this
+	// console. A real, normal state to handle, not necessarily an error.
+} else {
+	for (u16 i = 0; i < 100; i++) {
+		if (!CFL_IsAvailableOfficialData(i)) continue;
+		MiiData mii;
+		if (CFL_GetOfficialData(i, &mii)) {
+			// mii is a real, valid MiiData from slot i.
+		}
+	}
+}
+```
+
+### Re-opening the Mii Selector on the last-picked Mii
+
+```c
+static MiiData lastPicked;
+static bool haveLastPicked = false;
+
+static void pickMii(void)
+{
+	MiiSelectorConf conf;
+	miiSelectorInit(&conf);
+
+	u16 initialIndex;
+	if (haveLastPicked && CFL_SearchOfficialData(&lastPicked, &initialIndex)) {
+		miiSelectorSetInitialIndex(&conf, initialIndex);
+	}
+
+	MiiSelectorReturn ret;
+	miiSelectorLaunch(&conf, &ret);
+	lastPicked = ret.mii;
+	haveLastPicked = true;
+}
+```
+
+### Exporting and validating `CFLStoreData`
+
+```c
+// Export: real Mii -> the standard checksummed exchange format.
+CFLStoreData store;
+if (CFL_MakeStoreData(&mii, &store)) {
+	// store is now ready to write into a QR code, send over StreetPass, etc.
+}
+
+// Import: never trust a CFLStoreData you didn't just create yourself.
+CFLStoreData received = /* decoded from a QR code, NFC tag, etc. */;
+if (CFL_IsStoreDataValid(&received)) {
+	CFL_InitCharModel(&model, &received.miiData, CFL_RESOLUTION_128,
+	                   CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL));
+} else {
+	// Checksum failed - corrupted or malformed data, don't use it.
 }
 ```
 
@@ -216,7 +664,7 @@ int main(void)
 		C3D_TexDelete(&icon); // caller owns it
 	}
 
-	CFL_DestroyCharModel(&model);
+	CFL_DeleteModel(&model);
 	CFL_Finalize();
 	C3D_Fini();
 	gfxExit();

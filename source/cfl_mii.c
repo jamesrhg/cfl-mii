@@ -1202,6 +1202,15 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 	float mouthScaleY = 4.5f * mouthScale * (mii->mouth_details.yscale * 0.12f + 0.64f);
 	float mouthPosY = mii->mustache_details.mouth_yposition * POS_Y_MUL + POS_Y_ADD_MOUTH;
 
+	float minPartHeightRef = 12.0f * 64.0f / (float)canvasSize;
+	bool eyeRNeedsHeightFloor = (eyeRIndex == 14 || eyeRIndex == 26);
+	bool eyeLNeedsHeightFloor = (eyeLIndex == 14 || eyeLIndex == 26);
+	float eyeScaleYR = (eyeRNeedsHeightFloor && eyeScaleYBase < minPartHeightRef) ? minPartHeightRef : eyeScaleYBase;
+	float eyeScaleYL = (eyeLNeedsHeightFloor && eyeScaleYBase < minPartHeightRef) ? minPartHeightRef : eyeScaleYBase;
+	bool mouthNeedsHeightFloor = (mouthIndex == 3 || mouthIndex == 15 || mouthIndex == 19 || mouthIndex == 20 ||
+		mouthIndex == 21 || mouthIndex == 23 || mouthIndex == 25);
+	if (mouthNeedsHeightFloor && mouthScaleY < minPartHeightRef) mouthScaleY = minPartHeightRef;
+
 	float mustacheScale = 0.4f * mii->beard_details.scale + 1.0f;
 	float mustacheScaleX = 4.5f * mustacheScale;
 	float mustacheScaleY = 9.0f * mustacheScale;
@@ -1275,11 +1284,11 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		const float* eyeColor0 = getEyeColor0(mii->eye_details.style);
 		bool flipVR = (types->eyeR == 4 || types->eyeR == 5);
 		bool flipVL = (types->eyeL == 4 || types->eyeL == 5);
-		d = (MaskPartsDesc){ { 32.0f - eyeSpacingX, eyePosY }, { eyeScaleX, eyeScaleYBase }, eyeRotateR, MASK_ORIGIN_RIGHT };
+		d = (MaskPartsDesc){ { 32.0f - eyeSpacingX, eyePosY }, { eyeScaleX, eyeScaleYR }, eyeRotateR, MASK_ORIGIN_RIGHT };
 		if (loadResTexture(cflData, cflSize, CFL_SECTION_EYE, eyeRIndex, &tex))
 			drawDualColorDecal(&d, &tex, eyeColor0, eyeColors1[eyeColorIndex], GPU_TEVOP_RGB_SRC_B, GPU_TEVOP_RGB_SRC_G, flipVR);
 
-		d = (MaskPartsDesc){ { eyeSpacingX + 32.0f, eyePosY }, { eyeScaleX, eyeScaleYBase }, 360.0f - eyeRotateLBase, MASK_ORIGIN_LEFT };
+		d = (MaskPartsDesc){ { eyeSpacingX + 32.0f, eyePosY }, { eyeScaleX, eyeScaleYL }, 360.0f - eyeRotateLBase, MASK_ORIGIN_LEFT };
 		if (loadResTexture(cflData, cflSize, CFL_SECTION_EYE, eyeLIndex, &tex))
 			drawDualColorDecal(&d, &tex, eyeColor0, eyeColors1[eyeColorIndex], GPU_TEVOP_RGB_SRC_B, GPU_TEVOP_RGB_SRC_G, flipVL);
 
@@ -1434,6 +1443,273 @@ bool CFL_IsStoreDataValid(const CFLStoreData* storeData)
 	return cflComputeCRC16(0, (const u8*)storeData, sizeof(CFLStoreData)) == 0;
 }
 
+#define CFL_DB_RECORD_OFFSET 8
+#define CFL_DB_RECORD_SIZE 92
+#define CFL_DB_RECORD_COUNT 100
+#define CFL_DB_ID_OFFSET 12
+#define CFL_DB_ID_LENGTH 10
+
+static u8 g_cflDbCache[CFL_DB_RECORD_OFFSET + CFL_DB_RECORD_COUNT * CFL_DB_RECORD_SIZE];
+static bool g_cflDbCacheValid = false;
+
+static bool loadOfficialDatabaseArray(u8* outArray, size_t arraySize, const char* caller)
+{
+	u32 archivePath[3] = { MEDIATYPE_NAND, 0xf000000bU, 0x00048000U };
+	FS_Path fsArchivePath = { PATH_BINARY, sizeof(archivePath), archivePath };
+
+	FS_Archive archive;
+	Result rc = FSUSER_OpenArchive(&archive, ARCHIVE_SHARED_EXTDATA, fsArchivePath);
+	if (R_FAILED(rc)) {
+		dbglogErr("%s: could not open the shared Mii Maker extdata (%08lX)\n", caller, (unsigned long)rc);
+		return false;
+	}
+
+	FS_Path filePath = fsMakePath(PATH_UTF16, u"/CFL_DB.dat");
+	Handle file;
+	rc = FSUSER_OpenFile(&file, archive, filePath, FS_OPEN_READ, 0);
+	if (R_FAILED(rc)) {
+		dbglogErr("%s: could not open CFL_DB.dat (%08lX) - has Mii Maker ever been opened?\n", caller, (unsigned long)rc);
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+
+	u32 got = 0;
+	rc = FSFILE_Read(file, &got, 0, outArray, (u32)arraySize);
+	FSFILE_Close(file);
+	FSUSER_CloseArchive(archive);
+
+	if (R_FAILED(rc) || got != arraySize) {
+		dbglogErr("%s: short read on CFL_DB.dat (%lu of %u bytes)\n", caller, (unsigned long)got, (unsigned)arraySize);
+		return false;
+	}
+	return true;
+}
+
+static void ensureDatabaseCacheLoaded(void)
+{
+	g_cflDbCacheValid = loadOfficialDatabaseArray(g_cflDbCache, sizeof(g_cflDbCache), "CFL_Initialize (database)");
+	if (g_cflDbCacheValid) {
+		dbglog("CFL_Initialize: database cached (%u bytes)\n", (unsigned)sizeof(g_cflDbCache));
+	} else {
+		dbglog("CFL_Initialize: no CFL_DB.dat database available - official-data queries will be unavailable\n");
+	}
+}
+
+static bool officialRecordIsEmpty(const u8* record)
+{
+	const u8* recordId = record + CFL_DB_ID_OFFSET;
+	for (int b = 0; b < CFL_DB_ID_LENGTH; b++) {
+		if (recordId[b] != 0) return false;
+	}
+	return true;
+}
+
+static void unpackOfficialRecord(const u8* record, MiiData* outMii)
+{
+	memcpy(outMii, record, sizeof(MiiData));
+}
+
+bool CFL_SearchOfficialData(const MiiData* mii, u16* outIndex)
+{
+	if (!mii || !outIndex || !g_cflDbCacheValid) return false;
+
+	const u8* miiBytes = (const u8*)mii;
+	const u8* targetId = miiBytes + 12;
+
+	for (int i = 0; i < CFL_DB_RECORD_COUNT; i++) {
+		const u8* record = g_cflDbCache + CFL_DB_RECORD_OFFSET + i * CFL_DB_RECORD_SIZE;
+		if (officialRecordIsEmpty(record)) continue;
+		if (memcmp(record + CFL_DB_ID_OFFSET, targetId, CFL_DB_ID_LENGTH) == 0) {
+			*outIndex = (u16)i;
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CFL_IsAvailableOfficialData(u16 index)
+{
+	if (index >= CFL_DB_RECORD_COUNT || !g_cflDbCacheValid) return false;
+	return !officialRecordIsEmpty(g_cflDbCache + CFL_DB_RECORD_OFFSET + index * CFL_DB_RECORD_SIZE);
+}
+
+bool CFL_GetOfficialData(u16 index, MiiData* outMii)
+{
+	if (!outMii || index >= CFL_DB_RECORD_COUNT || !g_cflDbCacheValid) return false;
+	const u8* record = g_cflDbCache + CFL_DB_RECORD_OFFSET + index * CFL_DB_RECORD_SIZE;
+	if (officialRecordIsEmpty(record)) return false;
+	unpackOfficialRecord(record, outMii);
+	return true;
+}
+
+int CFL_GetAvailableOfficialDataNum(void)
+{
+	if (!g_cflDbCacheValid) return -1;
+	int count = 0;
+	for (int i = 0; i < CFL_DB_RECORD_COUNT; i++) {
+		if (!officialRecordIsEmpty(g_cflDbCache + CFL_DB_RECORD_OFFSET + i * CFL_DB_RECORD_SIZE)) count++;
+	}
+	return count;
+}
+
+bool CFL_GetMyMiiIndex(u16* outIndex)
+{
+	if (!outIndex) return false;
+	*outIndex = 0;
+	if (!g_cflDbCacheValid) return false;
+	if (g_cflDbCache[0] != 'C' || g_cflDbCache[1] != 'F' || g_cflDbCache[2] != 'O' || g_cflDbCache[3] != 'G')
+		return false;
+	u8 index = g_cflDbCache[4];
+	if (index >= CFL_DB_RECORD_COUNT) return false;
+	*outIndex = index;
+	return true;
+}
+
+#define CFL_RECENT_REGION_OFFSET 0xc820
+#define CFL_RECENT_REGION_SIZE   0x1ca0
+#define CFL_RECENT_COUNT_OFFSET  4
+#define CFL_RECENT_HISTORY_OFFSET 8
+#define CFL_RECENT_SLOT_COUNT    100
+#define CFL_RECENT_RECORDS_OFFSET 0x6c
+#define CFL_RECENT_RECORD_SIZE   72
+
+static bool CFLi_AddRecentDBData(const MiiData* mii)
+{
+	if (!mii) return false;
+
+	const u8* miiBytes = (const u8*)mii;
+	bool idIsNull = true;
+	for (int b = 0; b < CFL_DB_ID_LENGTH; b++) {
+		if (miiBytes[CFL_DB_ID_OFFSET + b] != 0) { idIsNull = false; break; }
+	}
+	if (idIsNull) return false;
+
+	u16 alreadyOfficialIndex;
+	if (CFL_SearchOfficialData(mii, &alreadyOfficialIndex)) return true;
+
+	u32 archivePath[3] = { MEDIATYPE_NAND, 0xf000000bU, 0x00048000U };
+	FS_Path fsArchivePath = { PATH_BINARY, sizeof(archivePath), archivePath };
+	FS_Archive archive;
+	Result rc = FSUSER_OpenArchive(&archive, ARCHIVE_SHARED_EXTDATA, fsArchivePath);
+	if (R_FAILED(rc)) {
+		dbglogErr("CFLi_AddRecentDBData: could not open the shared Mii Maker extdata (%08lX)\n", (unsigned long)rc);
+		return false;
+	}
+
+	FS_Path filePath = fsMakePath(PATH_UTF16, u"/CFL_DB.dat");
+	Handle file;
+	rc = FSUSER_OpenFile(&file, archive, filePath, FS_OPEN_READ | FS_OPEN_WRITE, 0);
+	if (R_FAILED(rc)) {
+		dbglogErr("CFLi_AddRecentDBData: could not open CFL_DB.dat for writing (%08lX)\n", (unsigned long)rc);
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+
+	static u8 region[CFL_RECENT_REGION_SIZE];
+	u32 got = 0;
+	rc = FSFILE_Read(file, &got, CFL_RECENT_REGION_OFFSET, region, sizeof(region));
+	if (R_FAILED(rc) || got != sizeof(region)) {
+		dbglogErr("CFLi_AddRecentDBData: short read on the recent-DB region (%lu of %u bytes)\n",
+			(unsigned long)got, (unsigned)sizeof(region));
+		FSFILE_Close(file);
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+
+	if (region[0] != 'C' || region[1] != 'F' || region[2] != 'R' || region[3] != 'A') {
+		dbglogErr("CFLi_AddRecentDBData: recent-DB region has the wrong magic - refusing to write\n");
+		FSFILE_Close(file);
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+	if (cflComputeCRC16(0, region, sizeof(region)) != 0) {
+		dbglogErr("CFLi_AddRecentDBData: recent-DB region failed its checksum - refusing to write\n");
+		FSFILE_Close(file);
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+
+	u32 count;
+	memcpy(&count, region + CFL_RECENT_COUNT_OFFSET, sizeof(count));
+	u8* history = region + CFL_RECENT_HISTORY_OFFSET;
+	u8* records = region + CFL_RECENT_RECORDS_OFFSET;
+
+	if (count > CFL_RECENT_SLOT_COUNT) {
+		dbglogErr("CFLi_AddRecentDBData: recent-DB count field is out of range (%lu) - refusing to write\n", (unsigned long)count);
+		FSFILE_Close(file);
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+
+	int targetSlot = -1;
+	for (u32 i = 0; i < count; i++) {
+		u8 slot = history[i];
+		if (slot >= CFL_RECENT_SLOT_COUNT) continue;
+		const u8* record = records + (u32)slot * CFL_RECENT_RECORD_SIZE;
+		if (memcmp(record + CFL_DB_ID_OFFSET, miiBytes + CFL_DB_ID_OFFSET, CFL_DB_ID_LENGTH) == 0) {
+			targetSlot = slot;
+			break;
+		}
+	}
+
+	bool isNewEntry = false;
+	if (targetSlot < 0) {
+		if (count < CFL_RECENT_SLOT_COUNT) {
+			for (int slot = 0; slot < CFL_RECENT_SLOT_COUNT; slot++) {
+				const u8* record = records + (u32)slot * CFL_RECENT_RECORD_SIZE;
+				if (officialRecordIsEmpty(record)) { targetSlot = slot; break; }
+			}
+		}
+		if (targetSlot < 0) {
+			if (count == 0) {
+				dbglogErr("CFLi_AddRecentDBData: recent-DB count is 0 but no empty slot was found - refusing to write\n");
+				FSFILE_Close(file);
+				FSUSER_CloseArchive(archive);
+				return false;
+			}
+			targetSlot = history[0];
+			memmove(history, history + 1, count - 1);
+			count--;
+		}
+		isNewEntry = true;
+	}
+
+	memcpy(records + (u32)targetSlot * CFL_RECENT_RECORD_SIZE, miiBytes, CFL_RECENT_RECORD_SIZE);
+
+	if (isNewEntry) {
+		history[count] = (u8)targetSlot;
+		count++;
+		memcpy(region + CFL_RECENT_COUNT_OFFSET, &count, sizeof(count));
+	}
+
+	region[CFL_RECENT_REGION_SIZE - 2] = 0;
+	region[CFL_RECENT_REGION_SIZE - 1] = 0;
+	u16 crc = cflComputeCRC16(0, region, sizeof(region));
+	region[CFL_RECENT_REGION_SIZE - 2] = (u8)(crc >> 8);
+	region[CFL_RECENT_REGION_SIZE - 1] = (u8)crc;
+
+	u32 written = 0;
+	rc = FSFILE_Write(file, &written, CFL_RECENT_REGION_OFFSET, region, sizeof(region), FS_WRITE_FLUSH);
+	FSFILE_Close(file);
+	FSUSER_CloseArchive(archive);
+
+	if (R_FAILED(rc) || written != sizeof(region)) {
+		dbglogErr("CFLi_AddRecentDBData: short write on the recent-DB region (%lu of %u bytes, %08lX)\n",
+			(unsigned long)written, (unsigned)sizeof(region), (unsigned long)rc);
+		return false;
+	}
+
+	dbglog("CFLi_AddRecentDBData: %s slot %d\n", isNewEntry ? "added to" : "updated", targetSlot);
+	return true;
+}
+
+int CFL_GetWorkSize(bool hdModeEnabled)
+{
+	int base = hdModeEnabled ? 1024 : 128;
+	int size = base * base * 3;
+	return size + 0x400e0;
+}
+
 bool CFL_Initialize(void)
 {
 	dbglog("Opening CFL_Res.dat system archive...\n");
@@ -1445,6 +1721,8 @@ bool CFL_Initialize(void)
 	}
 	g_cflData = g_cflResBuffer;
 	g_cflSize = cflSize;
+
+	ensureDatabaseCacheLoaded();
 
 	vshader_dvlb = DVLB_ParseFile((u32*)vshader_shbin, vshader_shbin_size);
 	shaderProgramInit(&program);
@@ -1493,9 +1771,10 @@ void CFL_Finalize(void)
 	g_cflResBuffer = NULL;
 	g_cflData = NULL;
 	g_cflSize = 0;
+	g_cflDbCacheValid = false;
 }
 
-void CFL_DestroyCharModel(CFLCharModel* cm)
+void CFL_DeleteModel(CFLCharModel* cm)
 {
 	if (!cm) return;
 	clearParts(cm);
@@ -1661,6 +1940,9 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	cm->expressionFlags = expressionFlags;
 	cm->expression = startExpr;
 	cm->valid = true;
+
+	CFLi_AddRecentDBData(&mii);
+
 	return true;
 }
 
@@ -1688,6 +1970,12 @@ bool CFL_SetExpression(CFLCharModel* cm, CFLExpression expression)
 CFLExpression CFL_GetExpression(const CFLCharModel* cm)
 {
 	return cm ? cm->expression : CFL_EXPRESSION_NORMAL;
+}
+
+bool CFL_IsAvailableExpression(const CFLCharModel* cm, CFLExpression expression)
+{
+	if (!cm || (unsigned)expression >= CFL_EXPRESSION_COUNT) return false;
+	return (cm->expressionFlags & CFL_EXPRESSION_FLAG(expression)) && cm->maskTexBaked[expression];
 }
 
 int CFL_GetPartCount(const CFLCharModel* cm)
