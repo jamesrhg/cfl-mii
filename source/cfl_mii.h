@@ -54,6 +54,7 @@ typedef struct {
 	bool isAlphaOnly;
 	bool depthWrite;
 	bool noSpecular;
+	bool capBlend;
 } CFLPart;
 
 #define CFL_MAX_PARTS 12

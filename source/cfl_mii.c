@@ -774,7 +774,7 @@ static void loadPart(CFLCharModel* cm, const u8* cflData, u32 cflSize, u32 secti
 static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 	u32 modelSection, u32 modelIndex, u32 texSection, u32 texIndex,
 	const float translate[3], float partScale, bool flipX, const float tint[3],
-	const float solidFallback[3], bool depthWrite, bool noSpecular, const char* label)
+	const float solidFallback[3], bool depthWrite, bool noSpecular, bool capBlend, const char* label)
 {
 	CFLModel model;
 	if (!loadResModel(cflData, cflSize, modelSection, modelIndex, NULL, &model)) {
@@ -806,10 +806,19 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 	part->vbo = buildVertices(&model, translate, partScale, flipX, &count);
 	part->vertexCount = count;
 	bool needsTint = tex.format < CFL_TEXFMT_RG8;
-	part->color[0] = needsTint ? tint[0] : 1.0f;
-	part->color[1] = needsTint ? tint[1] : 1.0f;
-	part->color[2] = needsTint ? tint[2] : 1.0f;
+	float capHalvedTint[3];
+	const float* effectiveTint = tint;
+	if (capBlend && needsTint) {
+		capHalvedTint[0] = tint[0] * 0.5f;
+		capHalvedTint[1] = tint[1] * 0.5f;
+		capHalvedTint[2] = tint[2] * 0.5f;
+		effectiveTint = capHalvedTint;
+	}
+	part->color[0] = needsTint ? effectiveTint[0] : 1.0f;
+	part->color[1] = needsTint ? effectiveTint[1] : 1.0f;
+	part->color[2] = needsTint ? effectiveTint[2] : 1.0f;
 	part->needsTint = needsTint;
+	part->capBlend = capBlend && needsTint;
 	part->isAlphaOnly = (tex.format == CFL_TEXFMT_A4 || tex.format == CFL_TEXFMT_A8);
 	part->depthWrite = depthWrite;
 	part->noSpecular = noSpecular;
@@ -1894,7 +1903,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 
 	loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_CAP, hairIndex, CFL_SECTION_CAPTEX, mii.hair_style,
 		anchors.hair, 1.0f, mii.hair_details.flip != 0,
-		CFL_GetFavoriteColor(favColorIndex), NULL, true, false, "Cap");
+		CFL_GetFavoriteColor(favColorIndex), NULL, true, false, true, "Cap");
 
 	loadPart(cm, cflData, cflSize, CFL_SECTION_HAIR, hairIndex, anchors.hair, 1.0f, mii.hair_details.flip != 0,
 		hairColors[hairColorIndex], false, "Hair");
@@ -1919,7 +1928,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		loadPart(cm, cflData, cflSize, CFL_SECTION_NOSE, mii.nose_details.style, nosePos, noseScale, false,
 			skinColors[skinIndex], false, "Nose");
 		loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_NLINE, mii.nose_details.style,
-			CFL_SECTION_NLINETEX, mii.nose_details.style, nosePos, noseScale, false, noselineColor, NULL, false, true, "Nose canvas");
+			CFL_SECTION_NLINETEX, mii.nose_details.style, nosePos, noseScale, false, noselineColor, NULL, false, true, false, "Nose canvas");
 	}
 
 	if (mii.glasses_details.style != 0) {
@@ -1933,7 +1942,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		if (glassColorIndex >= 8) glassColorIndex = 0;
 		loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_GLASSES, 0,
 			CFL_SECTION_GLASSES_TEX, mii.glasses_details.style, glassPos, glassScale, false,
-			glassColors[glassColorIndex], NULL, true, false, "Glasses");
+			glassColors[glassColorIndex], NULL, true, false, false, "Glasses");
 	}
 
 	cm->mii = mii;
@@ -2164,12 +2173,28 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 						C3D_TexEnvSrc(env, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
 						C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
 					}
+
+					if (part->capBlend) {
+						C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+						C3D_TexEnvInit(env2);
+						C3D_TexEnvSrc(env2, C3D_RGB, GPU_PREVIOUS, GPU_FRAGMENT_PRIMARY_COLOR, 0);
+						C3D_TexEnvFunc(env2, C3D_RGB, GPU_ADD);
+						C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, 0, 0);
+						C3D_TexEnvFunc(env2, C3D_Alpha, GPU_REPLACE);
+						C3D_DirtyTexEnv(env2);
+					}
 				}
 
 				if (part->useIndices)
 					C3D_DrawElements(GPU_TRIANGLES, part->indexCount, C3D_UNSIGNED_BYTE, part->ibo);
 				else
 					C3D_DrawArrays(GPU_TRIANGLES, 0, part->vertexCount);
+
+				if (part->capBlend) {
+					C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+					C3D_TexEnvInit(env2);
+					C3D_DirtyTexEnv(env2);
+				}
 			}
 		}
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
