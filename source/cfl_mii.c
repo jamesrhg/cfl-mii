@@ -723,6 +723,7 @@ static void addPart(CFLCharModel* cm, const CFLModel* model, const float transla
 	part->isAlphaOnly = false;
 	part->depthWrite = true;
 	part->noSpecular = noSpecular;
+	part->capBlend = false;
 
 	if (model->indices && model->indexCount >= 3) {
 		part->ibo = linearAlloc(model->indexCount);
@@ -880,6 +881,7 @@ static int addTexturedPart(CFLCharModel* cm, const CFLModel* model, const float 
 	part->isAlphaOnly = false;
 	part->depthWrite = depthWrite;
 	part->noSpecular = false;
+	part->capBlend = false;
 	if (model->indices && model->indexCount >= 3) {
 		part->ibo = linearAlloc(model->indexCount);
 		memcpy(part->ibo, model->indices, model->indexCount);
@@ -1582,6 +1584,53 @@ bool CFL_GetMyMiiIndex(u16* outIndex)
 #define CFL_RECENT_RECORDS_OFFSET 0x6c
 #define CFL_RECENT_RECORD_SIZE   72
 
+typedef struct {
+	u64 uid;
+	u32 dateTime;
+} CFLiUblEntry;
+#define CFLI_UBL_MAX_ENTRIES 1000
+#define CFLI_UBL_NG_TIME     7
+
+static bool CFLi_UblIsExist(u64 authorId)
+{
+	u32 archivePath[3] = { MEDIATYPE_NAND, 0xf000000bU, 0x00048000U };
+	FS_Path fsArchivePath = { PATH_BINARY, sizeof(archivePath), archivePath };
+
+	FS_Archive archive;
+	Result rc = FSUSER_OpenArchive(&archive, ARCHIVE_SHARED_EXTDATA, fsArchivePath);
+	if (R_FAILED(rc)) return false;
+
+	FS_Path filePath = fsMakePath(PATH_UTF16, u"/ubll.lst");
+	Handle file;
+	rc = FSUSER_OpenFile(&file, archive, filePath, FS_OPEN_READ, 0);
+	if (R_FAILED(rc)) {
+		FSUSER_CloseArchive(archive);
+		return false;
+	}
+
+	static CFLiUblEntry entries[CFLI_UBL_MAX_ENTRIES];
+	u32 got = 0;
+	rc = FSFILE_Read(file, &got, 0, entries, sizeof(entries));
+	FSFILE_Close(file);
+	FSUSER_CloseArchive(archive);
+
+	if (R_FAILED(rc) || got != sizeof(entries)) return false;
+
+	for (int i = 0; i < CFLI_UBL_MAX_ENTRIES; i++) {
+		if (entries[i].uid == authorId && entries[i].dateTime != CFLI_UBL_NG_TIME) return true;
+	}
+	return false;
+}
+
+static bool CFLi_ReplaceProhibitedCharInfo(const MiiData* mii)
+{
+	u64 myAuthorId;
+	if (R_SUCCEEDED(CFGU_GenHashConsoleUnique(0, &myAuthorId)) && myAuthorId == mii->system_id) {
+		return false;
+	}
+	return CFLi_UblIsExist(mii->system_id);
+}
+
 static bool CFLi_AddRecentDBData(const MiiData* mii)
 {
 	if (!mii) return false;
@@ -1598,11 +1647,17 @@ static bool CFLi_AddRecentDBData(const MiiData* mii)
 			0x80, 0x00, 0x00, defaultIndex,
 			0xEC, 0xFF, 0x82, 0xD2, 0x00, 0x00,
 		};
-		if (memcmp(miiBytes + CFL_DB_ID_OFFSET, defaultId, CFL_DB_ID_LENGTH) == 0) return true;
+		if (memcmp(miiBytes + CFL_DB_ID_OFFSET, defaultId, CFL_DB_ID_LENGTH) == 0) {
+			dbglog("CFLi_AddRecentDBData: skipped - matches default/guest Mii index %u\n", defaultIndex);
+			return true;
+		}
 	}
 
 	u16 alreadyOfficialIndex;
-	if (CFL_SearchOfficialData(mii, &alreadyOfficialIndex)) return true;
+	if (CFL_SearchOfficialData(mii, &alreadyOfficialIndex)) {
+		dbglog("CFLi_AddRecentDBData: skipped - already in the Official DB at index %u\n", alreadyOfficialIndex);
+		return true;
+	}
 
 	u32 archivePath[3] = { MEDIATYPE_NAND, 0xf000000bU, 0x00048000U };
 	FS_Path fsArchivePath = { PATH_BINARY, sizeof(archivePath), archivePath };
@@ -1958,7 +2013,11 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	cm->expression = startExpr;
 	cm->valid = true;
 
-	CFLi_AddRecentDBData(&mii);
+	if (!CFLi_ReplaceProhibitedCharInfo(&mii)) {
+		CFLi_AddRecentDBData(&mii);
+	} else {
+		dbglog("CFL_InitCharModel: recent-DB add skipped - author is on this console's own local nn::ubl blocklist (CFLi_ReplaceProhibitedCharInfo)\n");
+	}
 
 	return true;
 }
