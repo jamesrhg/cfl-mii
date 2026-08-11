@@ -1593,6 +1593,14 @@ static bool CFLi_AddRecentDBData(const MiiData* mii)
 	}
 	if (idIsNull) return false;
 
+	for (u8 defaultIndex = 0; defaultIndex < 6; defaultIndex++) {
+		u8 defaultId[CFL_DB_ID_LENGTH] = {
+			0x80, 0x00, 0x00, defaultIndex,
+			0xEC, 0xFF, 0x82, 0xD2, 0x00, 0x00,
+		};
+		if (memcmp(miiBytes + CFL_DB_ID_OFFSET, defaultId, CFL_DB_ID_LENGTH) == 0) return true;
+	}
+
 	u16 alreadyOfficialIndex;
 	if (CFL_SearchOfficialData(mii, &alreadyOfficialIndex)) return true;
 
