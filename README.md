@@ -9,10 +9,11 @@ parses it, and builds a fully-shaded, textured 3D character model
 from a `MiiData` struct - the same data libctru's Mii Selector applet
 hands you. It can also search/read the console's real Mii database
 (`CFL_DB.dat`), encode/decode the standard `CFLStoreData` exchange
-format, and optionally attach a full-body model (real Nintendo body
-assets, or your own) to a `CFLCharModel` so both the real-time draw
-path and the icon renderer show head-on-body without any extra API
-surface - see [Body models](#body-models-optional) below.
+format, and optionally attach a full-body model - loaded from a real,
+standard **IQM** file, not a project-specific format - to a
+`CFLCharModel` so both the real-time draw path and the icon renderer
+show head-on-body without any extra API surface - see
+[Body models](#body-models-optional) below.
 
 Reverse-engineered from a retail 3DS title binary's debug info and
 cross-referenced against the real, compiled RFL (Wii) and FFL (Wii U)
@@ -44,6 +45,13 @@ link against `citro3d`/`ctru`.
   project never captured the exact values of; every function here
   returns `bool` instead (`true` = success) to avoid guessing at
   error-code semantics on top of everything else.
+- **Standard formats, not invented ones, wherever a real standard
+  applies.** Mii data itself is the real 3DS `MiiData` layout
+  (libctru's own struct); Mii exchange data is the real `CFLStoreData`
+  wrapper; body models are real, standard IQM files, openable and
+  editable by any IQM-aware tool (Blender's own importer/exporter,
+  other game engines) - not a bespoke binary format only this project
+  understands.
 
 ## API reference
 
@@ -187,6 +195,7 @@ typedef struct {
     bool isAlphaOnly;    // true: REPLACE with `color` for RGB. false: MODULATE by texture RGB.
     bool depthWrite;     // false for decal overlays (MASK, nose canvas) sitting on another part.
     bool noSpecular;     // true for flat 2D overlays that read wrong with a specular highlight.
+    bool capBlend;       // true only for CAP - see its own note below.
 } CFLPart;
 
 int CFL_GetPartCount(const CFLCharModel* model);
@@ -200,9 +209,22 @@ void CFL_RebindShader(void);
 - **`CFL_GetPartCount`/`CFL_GetPart`** - the built model as a plain
   array of draw-ready parts. Loop over them and draw however you like
   (see the rendering example below for the exact TEV/blend setup this
-  library's own parts expect - `needsTint`/`isAlphaOnly` specifically
-  matter, getting them backwards silently discards real texture detail
-  or tints the wrong thing).
+  library's own parts expect - `needsTint`/`isAlphaOnly`/`capBlend`
+  specifically matter, getting them backwards silently discards real
+  texture detail, tints the wrong thing, or colors a hat's own
+  underside pitch black instead of the real half-brightness favorite
+  color real CFL shows there).
+- **`part->capBlend`** - `true` only for the CAP part. Real CFL's own
+  cap-tint formula isn't a plain modulate the way every other tinted
+  part is - it's `favoriteColor * (texColor + 1) / 2`, so the
+  texture's own real intensity only ever chooses between half- and
+  full-brightness favorite color, never all the way down to black.
+  `color` is already pre-halved by this library for a `capBlend` part,
+  so a plain `texture * color` modulate (stage 0) gets you halfway
+  there - drawing a `capBlend` part needs one extra TEV stage,
+  `PREVIOUS + color` (additive), bracketed around *just that part's*
+  own draw call (see the example below). Every other part is unaffected
+  either way.
 - **`CFL_GetShaderLocations()`** - the shared vertex shader's
   `projection`/`modelView` uniform locations, so you can upload your
   own camera matrices each frame. This library has no opinion on
@@ -253,7 +275,7 @@ typedef struct {
     bool hasHeadBone;
     float headBoneWorldMatrix[12]; // 3 rows of 4 (row_i = [Ai0,Ai1,Ai2,ti]) -
                                     // the real world transform of the body's
-                                    // own "head"/neck attach point
+                                    // own "head" joint's own attach point
     float bodyScale[3]; // real nn::mii::detail::GetBodyScale(build,height) -
                          // how much THIS Mii's own build/height stretches
                          // the body model from its neutral pose
@@ -275,19 +297,15 @@ software too (this mirrors `ariankordi/FFL.js`'s own real
 baked into `CFL_InitCharModel` itself.
 
 - **`CFL_LoadBodyModel(bodyData, bodySize, mii, &body)`** - parses a
-  body model asset and colors it for `mii` (body = favorite color,
-  pants = gold/gray depending on the Mii's own ID) and scales it per
-  that Mii's own real build/height. `bodyData`/`bodySize` are **not** a
-  standard Nintendo format - they're a small, custom, offline-extracted
-  layout this project calls "CFLB" (magic `"CFLB"`, a flat bone table +
-  per-vertex position/normal/bone-index data), produced once from a
-  real body asset (Nintendo's own `MiiBodyMiddle`-family models, or the
-  small dedicated icon-body asset) via an offline export step - not
-  something this library can parse directly from a stock `.bcmdl`/glTF
-  file. See [cfl-tool](https://github.com/jamesrhg/cfl-tool)'s own
-  `data/` directory for real, ready-to-use `.bin` files and how they're
-  embedded into a 3dsx via `bin2s`. Returns `false` (leaving `*outBody`
-  zeroed) on any parse failure.
+  real, standard **IQM** file's raw bytes and colors the result for
+  `mii` (body = favorite color, pants = gold/gray depending on the
+  Mii's own ID) and scales it per that Mii's own real build/height.
+  Returns `false` (leaving `*outBody` zeroed) on any parse failure -
+  including a well-formed IQM file whose joint/mesh naming this
+  library simply doesn't recognize (see
+  [The IQM format, in detail](#the-iqm-format-in-detail) below for
+  exactly what's required and why a mismatch is a hard failure, not a
+  best-effort guess).
 - **`CFL_DeleteBodyModel(body)`** - frees every part's vbo/ibo. Safe on
   an already-empty or partially-loaded `CFLBodyModel`.
 - **`CFL_AttachBody(model, body)`** - sets (or clears, `body = NULL`)
@@ -303,7 +321,167 @@ baked into `CFL_InitCharModel` itself.
   exactly (its own real `headToBodyScale` constant) - use this when
   drawing a body in your own real-time scene (see the example below);
   `CFL_CommandMakeModelIcon`'s own internal drawing does **not** use
-  it (see the note in Icon rendering below for why).
+  it (see the note in [Icon rendering](#icon-rendering) below for why).
+
+#### The IQM format, in detail
+
+Body models load from real [IQM (Inter-Quake
+Model)](http://sauerbraten.org/iqm/) files - the same open, documented
+binary format Blender's own IQM importer/exporter, several other game
+engines, and tools like `fte-team/fteqw` already support. This library
+does **not** implement or require a project-specific format for body
+assets at all; any IQM file that follows the conventions below will
+load.
+
+**What this library reads from a real IQM file:**
+
+- **Text section** - used for two things: each joint's own real name,
+  and each mesh's own real `material` name (see "Mesh material
+  identity" below).
+- **Joints** (`iqmjoint`) - real, standard IQM joint records: a parent
+  index (strictly before the joint itself in the array - a normal IQM
+  export convention, not a project-specific requirement) and a real
+  LOCAL (parent-relative) `translate`/`rotate`(quaternion, XYZW)/`scale`.
+  This library composes the real joint hierarchy itself, on-device,
+  the general/correct way to consume this data - it does **not**
+  expect a pre-baked world transform (real IQM has no such field
+  anyway).
+- **Vertex arrays** - four are *required*: `POSITION` and `NORMAL`
+  (both `FLOAT`, 3 components) and `BLENDINDEXES`/`BLENDWEIGHTS` (both
+  `UBYTE`, 4 components - real linear-blend-skinning data, weights
+  0-255 summing to 255 per vertex). Any *other* vertex array a real
+  exporter also writes (texcoords, tangents, vertex colors, ...) is
+  simply ignored, not an error. A file missing any of the four
+  required arrays fails to load.
+- **Meshes and triangles** - each mesh's own vertex/triangle range,
+  read directly; each mesh capped at 256 vertices (this library's own
+  parts use `u8` indices) - a bigger single mesh needs splitting into
+  more than one mesh at export time.
+- **Poses/anims/frames** - read and bounds-validated if present (so a
+  malformed animation section is still caught, not silently ignored),
+  but **not yet consumed** - see
+  [Adding animation playback](#adding-animation-playback-not-yet-implemented)
+  below.
+
+**Mesh material identity - read the name, never the mesh's array
+position.** Each mesh's own real, standard `material` text field must
+be exactly `mt_body` or `mt_pants` - this is how `CFL_LoadBodyModel`
+tells the body mesh apart from the pants mesh (and, for a
+single-mesh body like a small icon-sized asset, `mt_body` is simply
+the only mesh present). This is deliberately **not** inferred from
+which mesh comes first in the file: real body/pants export order can
+genuinely differ between two otherwise-equivalent source assets (a
+male and female body rig exported from the same tool, for example, can
+end up with their meshes in opposite order) - trusting array position
+instead of the mesh's own declared identity is exactly the kind of bug
+that silently swaps which part gets which color. An unrecognized or
+missing material name is a hard parse failure, by design, rather than
+a guess.
+
+**Bone-scale category, resolved by joint name.** This library applies
+a real, per-Mii, non-uniform stretch (`bodyScale`, above) to different
+regions of the body differently - torso/hips/legs get the full
+build/height vector, arms get two axes swapped, wrists/ankles get a
+single uniform scalar, and the neck/head joint is clamped so it never
+gets *shorter* than its rest length (matching `ariankordi/FFL.js`'s
+own real `editorBodyScaleDesc` table). Real IQM has no field for this
+project-specific concept, so it's resolved by matching each joint's
+own real name (`skl_root`, `chest`, `arm_l1`, `arm_l2`, `wrist_l`,
+`arm_r1`, `arm_r2`, `wrist_r`, `head`, `hip`, `foot_l1`, `foot_l2`,
+`ankle_l`, `foot_r1`, `foot_r2`, `ankle_r`) against a small internal
+table, defaulting to the full non-uniform vector for any joint name it
+doesn't recognize. The joint literally named `head` is also where
+`headBoneWorldMatrix` comes from.
+
+**Real linear-blend skinning, not hardcoded rigid.** Every vertex is
+transformed by a real weighted blend across up to 4 bone influences
+(`blendindexes`/`blendweights`), summed and re-normalized, exactly
+like any other real IQM consumer would. A rigid single-influence
+asset (every real body model this project ships is exactly that -
+100% weight on one bone, 0 on the rest) is simply the degenerate case
+of the same general formula, not a separate code path.
+
+**Producing your own body `.iqm` files.** This library doesn't ship or
+require any particular export pipeline - any tool that writes a
+spec-compliant IQM file with the vertex arrays and mesh material names
+above will work (Blender's own IQM exporter is a reasonable starting
+point: rig a mesh, weight-paint it, name your two material slots
+`mt_body`/`mt_pants`, export as IQM). If you're generating IQM files
+programmatically instead (e.g. from another 3D format, or procedurally),
+remember: joints must be written parent-before-child, `BLENDWEIGHTS`
+must sum to 255 per vertex, and quaternions are XYZW.
+
+#### Adding animation playback (not yet implemented)
+
+This library currently loads a body's bind pose once, at
+`CFL_LoadBodyModel` time, computes final world-space vertex positions
+right then (real joint-hierarchy composition + real weighted
+skinning, both described above), and bakes the result into a plain,
+static `vbo`/`ibo` - there is no time-varying state anywhere in a
+loaded `CFLBodyModel`. `cfliqmParse` already reads and bounds-validates
+a file's own `iqmpose`/`iqmanim`/frame sections if present (so a
+malformed animation section is caught even today), but nothing
+currently *samples* them - the actual "advance to time T and produce a
+pose" step doesn't exist yet. This was a deliberate choice: real IQM is
+the format that makes animation possible, but wiring up playback is a
+separate, later feature.
+
+If you want to add it, here's what's already in place to build on, and
+what isn't:
+
+- **Already real and reusable**: the joint-hierarchy composition this
+  library does once at load time (quaternion → 3×3 rotation matrix,
+  then walking the joint array parent-before-child, composing each
+  joint's LOCAL transform against its already-computed parent) is
+  exactly the same math a per-frame pose evaluation needs - it just
+  needs to run with a *different* set of joint transforms (this
+  frame's sampled pose) instead of the bind pose, every frame instead
+  of once.
+- **Already real and reusable**: the weighted linear-blend skinning
+  formula (up to 4 bone influences per vertex, normalized) is likewise
+  exactly what a per-frame vertex update needs - it's just currently
+  invoked once, at load time, writing into a static buffer, instead of
+  every frame, writing into a buffer the GPU reads fresh each draw.
+- **Not yet implemented - sampling a pose from `iqmanim`/`iqmpose`/frame
+  data.** Real IQM's own encoding: an `iqmanim` names a contiguous
+  range of frames (with a framerate) inside the file's own global
+  frame list; each `iqmpose` describes one joint's own 10 channels (3
+  translate + 4 rotate + 3 scale) via a `channeloffset`/`channelscale`
+  pair per channel plus a bitmask of which channels actually vary
+  frame-to-frame (a channel that's constant for the whole animation
+  isn't stored per-frame at all); each frame itself is a flat array of
+  packed `u16` values, one per *animated* channel across every joint,
+  in order - decoding one frame means walking each joint's own pose
+  channel mask and either reading+dequantizing the next `u16`
+  (`channeloffset + rawValue * channelscale`) or just using
+  `channeloffset` directly for a channel that mask says is constant.
+- **Not yet implemented - a choice of where the per-frame skinning
+  actually runs.** Two real options, with different tradeoffs:
+    - **CPU (software) skinning** - the more direct extension: keep
+      today's plain static-buffer approach, but re-run the *same*
+      hierarchy-composition + weighted-blend formulas every frame (or
+      every few frames) with a freshly-sampled pose, and re-upload the
+      result into the existing `vbo`. Simplest to build on top of what
+      exists today; costs real CPU time per animated body per frame,
+      proportional to vertex count.
+    - **GPU skinning** - faster for several simultaneous animated
+      bodies, but a bigger architecture change: the vertex format
+      would need to carry raw bind-pose-relative positions plus
+      `blendindexes`/`blendweights` directly (instead of this
+      library's own current pre-baked world positions), an array of
+      per-joint bone matrices would need to be uploaded as a uniform
+      each frame, and the vertex shader itself would need to do the
+      weighted blend instead of the CPU. A real, standard technique
+      (the same one most modern skinned-mesh renderers use), just not
+      what this library's current single, simple vertex shader does
+      today.
+
+Either path can reuse the *shape* of `cflComposeJointWorld`'s own real
+parent-chain composition and the weighted-blend math already sitting
+in `cflBuildBodyPart` - the missing piece is purely the animation-
+*sampling* step (turning `iqmanim`/`iqmpose`/frame bytes into "this
+joint's LOCAL transform, right now") and deciding where the result
+gets applied.
 
 ### Icon rendering
 
@@ -326,7 +504,6 @@ typedef struct {
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* model, CFLExpression expression,
                                int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon);
-void CFL_ReleaseIconTarget(C3D_Tex* outIcon);
 ```
 
 Real CFL function (`CFL_CommandMakeModelIcon`, DWARF-confirmed), and
@@ -352,21 +529,17 @@ the simplest, most direct result (an unscaled head, a repositioned
 body) looked correct, after several attempts at an explicit size ratio
 either over- or under-shot.
 
-**Ownership changed from a plain `C3D_Tex`**: `CFL_CommandMakeModelIcon`
-caches and reuses its own render target internally per `(outIcon,
-iconSize)` pair instead of creating and deleting one on every call
-(repeatedly toggling something like an attached body used to risk a
-real GPU hang tied to deleting a render target that had just had body
-geometry drawn into it - caching sidesteps that entirely). This means
-a plain `C3D_TexDelete(&icon)` is no longer enough to clean up after
-yourself - call **`CFL_ReleaseIconTarget(&icon)`** instead once you're
-genuinely done with that texture (it releases the cached render target
-*and* frees the texture's own VRAM). Safe to call on a texture that
-was never passed to `CFL_CommandMakeModelIcon` at all (a harmless no-op
-cache lookup). You can still call `CFL_CommandMakeModelIcon` again on
-the *same* `C3D_Tex`/size pair as many times as you want (e.g. toggling
-`attachedBody` on and off) without releasing in between - that's the
-whole point of the cache.
+**Ownership**: `CFL_CommandMakeModelIcon` creates a fresh render
+target, draws into it, and tears the render target back down again -
+all within the one call. `*outIcon` is a completely ordinary
+`C3D_Tex`; you own it exactly the way you'd own any other texture this
+library hands back (e.g. `CFLPart.tex`) and free it with a plain
+`C3D_TexDelete(&icon)` when you're done. Calling
+`CFL_CommandMakeModelIcon` again on the *same* `C3D_Tex` (e.g. to
+render a new expression, or to toggle `attachedBody` on and off) is
+always safe without freeing it yourself first - this function frees any
+previous render already on that struct automatically before making a
+new one, so repeated calls on one persistent `C3D_Tex` never leak.
 
 ### Mii database access
 
@@ -465,6 +638,13 @@ crashing on - check these rather than assuming success:
   expression alone rather than doing anything destructive, but check
   `CFL_IsAvailableExpression` first if your UI needs to know in
   advance whether a switch will work.
+- **`CFL_LoadBodyModel` fails on a malformed or unrecognized IQM file**
+  - a real, well-formed IQM file that's simply missing one of the four
+  required vertex arrays, or whose mesh material names aren't
+  `mt_body`/`mt_pants`, is a hard failure by design (see
+  [The IQM format, in detail](#the-iqm-format-in-detail) above) rather
+  than a best-effort partial load - check the return value before
+  using `*outBody`.
 - **Every `CFL_*OfficialData` function can fail if Mii Maker has never
   been opened on this console** - there's no `CFL_DB.dat` to read yet.
   This is a normal, expected state (common on a fresh console/emulator
@@ -562,10 +742,29 @@ static void drawModelPartsAt(const CFLCharModel* model, const C3D_Mtx* projectio
 				C3D_TexEnvFunc(env0, C3D_Both, GPU_REPLACE);
 			}
 
+			// CAP's own real tint formula needs one extra additive stage -
+			// see CFLPart.capBlend's own note above. Bracketed around just
+			// this one part's own draw call, nothing else.
+			if (part->capBlend) {
+				C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+				C3D_TexEnvInit(env2);
+				C3D_TexEnvSrc(env2, C3D_RGB, GPU_PREVIOUS, GPU_FRAGMENT_PRIMARY_COLOR, 0);
+				C3D_TexEnvFunc(env2, C3D_RGB, GPU_ADD);
+				C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, 0, 0);
+				C3D_TexEnvFunc(env2, C3D_Alpha, GPU_REPLACE);
+				C3D_DirtyTexEnv(env2);
+			}
+
 			if (part->useIndices)
 				C3D_DrawElements(GPU_TRIANGLES, part->indexCount, C3D_UNSIGNED_BYTE, part->ibo);
 			else
 				C3D_DrawArrays(GPU_TRIANGLES, 0, part->vertexCount);
+
+			if (part->capBlend) {
+				C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+				C3D_TexEnvInit(env2);
+				C3D_DirtyTexEnv(env2);
+			}
 		}
 	}
 }
@@ -775,9 +974,8 @@ int main(void)
 	if (CFL_CommandMakeModelIcon(&model, CFL_EXPRESSION_NORMAL, 256, &setting, &icon)) {
 		// `icon` is a normal C3D_Tex with real per-pixel alpha - draw it
 		// as an alpha-blended textured quad, same as any other
-		// transparent texture. Release with CFL_ReleaseIconTarget, NOT a
-		// plain C3D_TexDelete - see "Icon rendering" above for why.
-		CFL_ReleaseIconTarget(&icon);
+		// transparent texture. Release with a plain C3D_TexDelete when done.
+		C3D_TexDelete(&icon);
 	}
 
 	CFL_DeleteModel(&model);
@@ -793,18 +991,18 @@ int main(void)
 `CFLBodyPart` is drawn exactly like an untextured `CFLPart` (same
 vbo/ibo/color shape, same default shader) - the only new step is
 positioning the head at the body's own real neck-bone world position
-instead of a fixed offset. This example assumes a body asset has
-already been embedded and exported as `body_bin`/`body_bin_size` (the
-usual devkitPro `bin2s` convention - see
-[cfl-tool](https://github.com/jamesrhg/cfl-tool)'s own `data/`
-directory and `Makefile` for real, ready-to-use body files and how
+instead of a fixed offset. This example assumes a real, standard IQM
+body asset has already been embedded and exported as
+`body_iqm`/`body_iqm_size` (the usual devkitPro `bin2s` convention -
+see [cfl-tool](https://github.com/jamesrhg/cfl-tool)'s own `data/`
+directory and `Makefile` for real, ready-to-use `.iqm` files and how
 they're embedded):
 
 ```c
 #include <3ds.h>
 #include <citro3d.h>
 #include "cfl_mii.h"
-#include "body_bin.h" // extern const u8 body_bin[]; extern const u32 body_bin_size;
+#include "body_iqm.h" // extern const u8 body_iqm[]; extern const u32 body_iqm_size;
 
 typedef struct { float position[3]; float normal[3]; float texcoord[2]; } Vertex;
 
@@ -875,7 +1073,7 @@ static void drawModelWithBody(const CFLCharModel* model, const CFLBodyModel* bod
 	// default shader" above, just handed this explicit headView instead
 	// of building its own fixed modelView - see that example for the
 	// full loop body (CFL_GetPartCount/CFL_GetPart, the two-pass
-	// untextured/textured TEV setup, etc).
+	// untextured/textured TEV setup, the capBlend bracket, etc).
 	drawModelPartsAt(model, projection, &headView);
 }
 
@@ -898,7 +1096,7 @@ int main(void)
 	CFL_InitCharModel(&model, &ret.mii, CFL_RESOLUTION_128, CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL));
 
 	CFLBodyModel body = {0};
-	bool hasBody = CFL_LoadBodyModel(body_bin, body_bin_size, &ret.mii, &body);
+	bool hasBody = CFL_LoadBodyModel(body_iqm, body_iqm_size, &ret.mii, &body);
 	// Body load failure is deliberately non-fatal - fall back to
 	// head-only (drawModelWithBody already handles body == NULL).
 
@@ -933,14 +1131,16 @@ Builds on "Creating a transparent icon" above - the only difference is
 one `CFL_AttachBody` call before rendering. Toggling the body on/off
 later (e.g. a UI button) is just calling `CFL_AttachBody` again
 followed by another `CFL_CommandMakeModelIcon` call on the *same*
-`C3D_Tex` - no need to release and recreate anything in between:
+`C3D_Tex` - no need to free and recreate the texture yourself in
+between (see [Icon rendering](#icon-rendering) above for the ownership
+rules):
 
 ```c
 CFLCharModel model = {0};
 CFL_InitCharModel(&model, &ret.mii, CFL_RESOLUTION_256, CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL));
 
 CFLBodyModel body = {0};
-bool hasBody = CFL_LoadBodyModel(body_bin, body_bin_size, &ret.mii, &body);
+bool hasBody = CFL_LoadBodyModel(body_iqm, body_iqm_size, &ret.mii, &body);
 
 C3D_Tex icon = {0};
 
@@ -951,13 +1151,13 @@ CFL_CommandMakeModelIcon(&model, CFL_EXPRESSION_NORMAL, 256, NULL, &icon);
 // `icon` now shows the head-on-body composite (or just the head, if
 // hasBody was false) - draw it as a textured quad like any C3D_Tex.
 
-// ...later, toggle the body off without reselecting a Mii or
-// reallocating anything - reuses the same cached render target:
+// ...later, toggle the body off without reselecting a Mii - just call
+// again on the same texture, no manual free/recreate needed in between:
 CFL_AttachBody(&model, NULL);
 CFL_CommandMakeModelIcon(&model, CFL_EXPRESSION_NORMAL, 256, NULL, &icon);
 
 // Done for good:
-CFL_ReleaseIconTarget(&icon);
+C3D_TexDelete(&icon);
 if (hasBody) CFL_DeleteBodyModel(&body);
 CFL_DeleteModel(&model);
 ```

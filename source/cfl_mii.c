@@ -8,7 +8,6 @@
 
 #include "cfl_mii.h"
 #include "vshader_shbin.h"
-#include "MaleBody_bin.h"
 
 static FILE* s_debugLog = NULL;
 
@@ -1827,6 +1826,43 @@ static void cflGetBodyScale(u8 build, u8 height, float outScale[3])
 }
 
 #define CFL_BODY_MAX_BONES 18
+
+#define CFLI_IQM_MAGIC "INTERQUAKEMODEL"
+#define CFLI_IQM_VERSION 2
+
+typedef struct {
+	char magic[16];
+	u32 version;
+	u32 filesize;
+	u32 flags;
+	u32 num_text, ofs_text;
+	u32 num_meshes, ofs_meshes;
+	u32 num_vertexarrays, num_vertexes, ofs_vertexarrays;
+	u32 num_triangles, ofs_triangles, ofs_adjacency;
+	u32 num_joints, ofs_joints;
+	u32 num_poses, ofs_poses;
+	u32 num_anims, ofs_anims;
+	u32 num_frames, num_framechannels, ofs_frames, ofs_bounds;
+	u32 num_comment, ofs_comment;
+	u32 num_extensions, ofs_extensions;
+} CFLiIqmHeader;
+
+typedef struct { u32 name, material; u32 first_vertex, num_vertexes; u32 first_triangle, num_triangles; } CFLiIqmMesh;
+typedef struct { u32 vertex[3]; } CFLiIqmTriangle;
+typedef struct { u32 name; s32 parent; float translate[3], rotate[4], scale[3]; } CFLiIqmJoint;
+typedef struct { s32 parent; u32 mask; float channeloffset[10], channelscale[10]; } CFLiIqmPose;
+typedef struct { u32 name, first_frame, num_frames; float framerate; u32 flags; } CFLiIqmAnim;
+typedef struct { u32 type, flags, format, size, offset; } CFLiIqmVertexArray;
+
+enum {
+	CFLI_IQM_POSITION = 0, CFLI_IQM_TEXCOORD = 1, CFLI_IQM_NORMAL = 2, CFLI_IQM_TANGENT = 3,
+	CFLI_IQM_BLENDINDEXES = 4, CFLI_IQM_BLENDWEIGHTS = 5, CFLI_IQM_COLOR = 6, CFLI_IQM_CUSTOM = 0x10,
+};
+enum {
+	CFLI_IQM_BYTE = 0, CFLI_IQM_UBYTE = 1, CFLI_IQM_SHORT = 2, CFLI_IQM_USHORT = 3, CFLI_IQM_INT = 4,
+	CFLI_IQM_UINT = 5, CFLI_IQM_HALF = 6, CFLI_IQM_FLOAT = 7, CFLI_IQM_DOUBLE = 8,
+};
+
 typedef struct {
 	s32 parentBoneIndex;
 	float pivot[3];
@@ -1836,7 +1872,8 @@ typedef struct {
 typedef struct {
 	float position[3];
 	float normal[3];
-	u32 boneIndex;
+	u8 boneIndex[4];
+	u8 boneWeight[4];
 } CFLiBodyRawVertex;
 
 typedef struct {
@@ -1844,7 +1881,7 @@ typedef struct {
 	u32 vertexCount;
 	CFLiBodyRawVertex* vertices;
 	u32 indexCount;
-	const u8* indices;
+	u8* indices;
 } CFLiBodyPart;
 
 typedef struct {
@@ -1863,70 +1900,232 @@ typedef enum {
 	CFLI_BODY_SCALE_NONE = 4,
 } CFLiBodyScaleCategory;
 
-static void cflbFreePart(CFLiBodyPart* part)
+static void cfliqmFreePart(CFLiBodyPart* part)
 {
 	free(part->vertices);
+	free(part->indices);
 }
 
-static bool cflbParse(const u8* data, u32 size, CFLiBodyFile* out)
+static u32 cflBoneCategoryFromName(const char* name)
 {
-	memset(out, 0, sizeof(*out));
-	if (size < 12 || memcmp(data, "CFLB", 4) != 0) {
-		dbglog("cflbParse: bad magic or file too small\n");
-		return false;
-	}
-	u32 p = 4;
-	u32 version;
-	memcpy(&version, data + p, 4); p += 4;
-	if (version != 2) {
-		dbglog("cflbParse: unsupported version %lu\n", (unsigned long)version);
-		return false;
-	}
-	u32 nrBones;
-	memcpy(&nrBones, data + p, 4); p += 4;
-	if (nrBones > CFL_BODY_MAX_BONES) {
-		dbglog("cflbParse: nrBones %lu exceeds CFL_BODY_MAX_BONES\n", (unsigned long)nrBones);
-		return false;
-	}
-	out->nrBones = nrBones;
-	for (u32 i = 0; i < nrBones; i++) {
-		if (p + 20 > size) { dbglog("cflbParse: truncated bone table\n"); return false; }
-		CFLiBodyBone* bone = &out->bones[i];
-		memcpy(&bone->parentBoneIndex, data + p, 4); p += 4;
-		memcpy(bone->pivot, data + p, sizeof(bone->pivot)); p += sizeof(bone->pivot);
-		memcpy(&bone->category, data + p, 4); p += 4;
-	}
-	if (p + 8 > size) { dbglog("cflbParse: truncated header tail\n"); return false; }
-	memcpy(&out->headBoneIndex, data + p, 4); p += 4;
-	u32 partCount;
-	memcpy(&partCount, data + p, 4); p += 4;
-	if (partCount > CFL_BODY_MAX_PARTS) {
-		dbglog("cflbParse: partCount %lu exceeds CFL_BODY_MAX_PARTS\n", (unsigned long)partCount);
-		return false;
-	}
-	out->partCount = partCount;
+	static const struct { const char* name; u32 category; } kTable[] = {
+		{ "arm_l1", CFLI_BODY_SCALE_YXZ }, { "arm_l2", CFLI_BODY_SCALE_YXZ },
+		{ "arm_r1", CFLI_BODY_SCALE_YXZ }, { "arm_r2", CFLI_BODY_SCALE_YXZ },
+		{ "wrist_l", CFLI_BODY_SCALE_SCALAR }, { "wrist_r", CFLI_BODY_SCALE_SCALAR },
+		{ "ankle_l", CFLI_BODY_SCALE_SCALAR }, { "ankle_r", CFLI_BODY_SCALE_SCALAR },
+		{ "head", CFLI_BODY_SCALE_XYZ_YMIN1 },
+	};
+	for (size_t i = 0; i < sizeof(kTable) / sizeof(kTable[0]); i++)
+		if (strcmp(name, kTable[i].name) == 0) return kTable[i].category;
+	return CFLI_BODY_SCALE_XYZ;
+}
 
-	for (u32 i = 0; i < partCount; i++) {
-		if (p + 12 > size) { dbglog("cflbParse: truncated part header\n"); return false; }
-		CFLiBodyPart* part = &out->parts[i];
-		memcpy(&part->materialIndex, data + p, 4); p += 4;
-		memcpy(&part->vertexCount, data + p, 4); p += 4;
-		memcpy(&part->indexCount, data + p, 4); p += 4;
+static void cflQuatToMat3(const float q[4], float m[3][3])
+{
+	float x = q[0], y = q[1], z = q[2], w = q[3];
+	float x2 = x + x, y2 = y + y, z2 = z + z;
+	float xx = x * x2, xy = x * y2, xz = x * z2;
+	float yy = y * y2, yz = y * z2, zz = z * z2;
+	float wx = w * x2, wy = w * y2, wz = w * z2;
+	m[0][0] = 1.0f - (yy + zz); m[0][1] = xy - wz;         m[0][2] = xz + wy;
+	m[1][0] = xy + wz;          m[1][1] = 1.0f - (xx + zz); m[1][2] = yz - wx;
+	m[2][0] = xz - wy;          m[2][1] = yz + wx;          m[2][2] = 1.0f - (xx + yy);
+}
 
-		u32 vertexDataSize = part->vertexCount * (u32)sizeof(CFLiBodyRawVertex);
-		if ((u64)p + vertexDataSize + part->indexCount > size) {
-			dbglog("cflbParse: truncated part %lu data\n", (unsigned long)i);
-			return false;
+typedef struct { float rot[3][3]; float scale[3]; float translate[3]; } CFLiJointWorld;
+
+static void cflComposeJointWorld(const CFLiIqmJoint* joints, u32 nrJoints, CFLiJointWorld* outWorld)
+{
+	for (u32 i = 0; i < nrJoints; i++) {
+		float localRot[3][3];
+		cflQuatToMat3(joints[i].rotate, localRot);
+		const float* ls = joints[i].scale;
+		const float* lt = joints[i].translate;
+		s32 parent = joints[i].parent;
+
+		if (parent < 0) {
+			memcpy(outWorld[i].rot, localRot, sizeof(localRot));
+			outWorld[i].scale[0] = ls[0]; outWorld[i].scale[1] = ls[1]; outWorld[i].scale[2] = ls[2];
+			outWorld[i].translate[0] = lt[0]; outWorld[i].translate[1] = lt[1]; outWorld[i].translate[2] = lt[2];
+			continue;
+		}
+		const CFLiJointWorld* pw = &outWorld[parent];
+		float scaledT[3] = { lt[0] * pw->scale[0], lt[1] * pw->scale[1], lt[2] * pw->scale[2] };
+		for (int r = 0; r < 3; r++) {
+			outWorld[i].translate[r] = pw->translate[r]
+				+ pw->rot[r][0] * scaledT[0] + pw->rot[r][1] * scaledT[1] + pw->rot[r][2] * scaledT[2];
+		}
+		for (int r = 0; r < 3; r++) {
+			for (int c = 0; c < 3; c++) {
+				outWorld[i].rot[r][c] = pw->rot[r][0] * localRot[0][c] + pw->rot[r][1] * localRot[1][c] + pw->rot[r][2] * localRot[2][c];
+			}
 		}
 
-		part->vertices = malloc(sizeof(CFLiBodyRawVertex) * part->vertexCount);
-		if (!part->vertices) return false;
-		memcpy(part->vertices, data + p, vertexDataSize);
-		p += vertexDataSize;
-		part->indices = data + p;
-		p += part->indexCount;
+		outWorld[i].scale[0] = pw->scale[0] * ls[0];
+		outWorld[i].scale[1] = pw->scale[1] * ls[1];
+		outWorld[i].scale[2] = pw->scale[2] * ls[2];
 	}
+}
+
+static u32 cfliqmFormatSize(u32 format)
+{
+	switch (format) {
+		case CFLI_IQM_BYTE: case CFLI_IQM_UBYTE: return 1;
+		case CFLI_IQM_SHORT: case CFLI_IQM_USHORT: case CFLI_IQM_HALF: return 2;
+		case CFLI_IQM_INT: case CFLI_IQM_UINT: case CFLI_IQM_FLOAT: return 4;
+		case CFLI_IQM_DOUBLE: return 8;
+		default: return 0;
+	}
+}
+
+static bool cfliqmParse(const u8* data, u32 size, CFLiBodyFile* out)
+{
+	memset(out, 0, sizeof(*out));
+	if (size < sizeof(CFLiIqmHeader)) { dbglog("cfliqmParse: file too small for header\n"); return false; }
+	CFLiIqmHeader hdr;
+	memcpy(&hdr, data, sizeof(hdr));
+	if (memcmp(hdr.magic, CFLI_IQM_MAGIC, 16) != 0) { dbglog("cfliqmParse: bad magic\n"); return false; }
+	if (hdr.version != CFLI_IQM_VERSION) { dbglog("cfliqmParse: unsupported version %lu\n", (unsigned long)hdr.version); return false; }
+	if (hdr.filesize > size) { dbglog("cfliqmParse: header filesize %lu exceeds buffer %lu\n", (unsigned long)hdr.filesize, (unsigned long)size); return false; }
+
+	#define CFLI_IQM_FITS(ofs, count, itemSize) ((u64)(ofs) + (u64)(count) * (u64)(itemSize) <= size)
+
+	const char* text = NULL;
+	if (hdr.num_text) {
+		if (!CFLI_IQM_FITS(hdr.ofs_text, hdr.num_text, 1)) { dbglog("cfliqmParse: text section out of bounds\n"); return false; }
+		text = (const char*)(data + hdr.ofs_text);
+	}
+
+	if (hdr.num_joints > CFL_BODY_MAX_BONES) { dbglog("cfliqmParse: num_joints %lu exceeds CFL_BODY_MAX_BONES\n", (unsigned long)hdr.num_joints); return false; }
+	if (!CFLI_IQM_FITS(hdr.ofs_joints, hdr.num_joints, sizeof(CFLiIqmJoint))) { dbglog("cfliqmParse: joints out of bounds\n"); return false; }
+	CFLiIqmJoint joints[CFL_BODY_MAX_BONES];
+	memcpy(joints, data + hdr.ofs_joints, (size_t)hdr.num_joints * sizeof(CFLiIqmJoint));
+	for (u32 i = 0; i < hdr.num_joints; i++) {
+		if (joints[i].parent >= (s32)i) { dbglog("cfliqmParse: joint %lu parent index %ld not strictly before it\n", (unsigned long)i, (long)joints[i].parent); return false; }
+	}
+
+	CFLiJointWorld world[CFL_BODY_MAX_BONES];
+	cflComposeJointWorld(joints, hdr.num_joints, world);
+
+	out->nrBones = hdr.num_joints;
+	out->headBoneIndex = 0;
+	bool foundHead = false;
+	for (u32 i = 0; i < hdr.num_joints; i++) {
+		out->bones[i].parentBoneIndex = joints[i].parent;
+		out->bones[i].pivot[0] = world[i].translate[0];
+		out->bones[i].pivot[1] = world[i].translate[1];
+		out->bones[i].pivot[2] = world[i].translate[2];
+		const char* name = (text && joints[i].name < hdr.num_text) ? (text + joints[i].name) : "";
+		out->bones[i].category = cflBoneCategoryFromName(name);
+		if (!foundHead && strcmp(name, "head") == 0) { out->headBoneIndex = i; foundHead = true; }
+	}
+	if (!foundHead) dbglog("cfliqmParse: no joint named \"head\" found - headBoneIndex defaults to 0\n");
+
+	if (!CFLI_IQM_FITS(hdr.ofs_vertexarrays, hdr.num_vertexarrays, sizeof(CFLiIqmVertexArray))) { dbglog("cfliqmParse: vertex arrays out of bounds\n"); return false; }
+	const float* vaPosition = NULL;
+	const float* vaNormal = NULL;
+	const u8* vaBlendIndexes = NULL;
+	const u8* vaBlendWeights = NULL;
+	for (u32 i = 0; i < hdr.num_vertexarrays; i++) {
+		CFLiIqmVertexArray va;
+		memcpy(&va, data + hdr.ofs_vertexarrays + (size_t)i * sizeof(va), sizeof(va));
+		u32 itemSize = cfliqmFormatSize(va.format);
+		if (itemSize == 0 || !CFLI_IQM_FITS(va.offset, hdr.num_vertexes, (u64)va.size * itemSize)) {
+
+			if (va.type == CFLI_IQM_POSITION || va.type == CFLI_IQM_NORMAL || va.type == CFLI_IQM_BLENDINDEXES || va.type == CFLI_IQM_BLENDWEIGHTS) {
+				dbglog("cfliqmParse: required vertex array type=%lu out of bounds or bad format\n", (unsigned long)va.type);
+				return false;
+			}
+			continue;
+		}
+		switch (va.type) {
+			case CFLI_IQM_POSITION:
+				if (va.format != CFLI_IQM_FLOAT || va.size != 3) { dbglog("cfliqmParse: position array must be FLOAT x3\n"); return false; }
+				vaPosition = (const float*)(data + va.offset);
+				break;
+			case CFLI_IQM_NORMAL:
+				if (va.format != CFLI_IQM_FLOAT || va.size != 3) { dbglog("cfliqmParse: normal array must be FLOAT x3\n"); return false; }
+				vaNormal = (const float*)(data + va.offset);
+				break;
+			case CFLI_IQM_BLENDINDEXES:
+				if (va.format != CFLI_IQM_UBYTE || va.size != 4) { dbglog("cfliqmParse: blendindexes array must be UBYTE x4\n"); return false; }
+				vaBlendIndexes = data + va.offset;
+				break;
+			case CFLI_IQM_BLENDWEIGHTS:
+				if (va.format != CFLI_IQM_UBYTE || va.size != 4) { dbglog("cfliqmParse: blendweights array must be UBYTE x4\n"); return false; }
+				vaBlendWeights = data + va.offset;
+				break;
+			default:
+				break;
+		}
+	}
+	if (!vaPosition || !vaNormal || !vaBlendIndexes || !vaBlendWeights) {
+		dbglog("cfliqmParse: missing a required vertex array (position/normal/blendindexes/blendweights)\n");
+		return false;
+	}
+
+	if (hdr.num_meshes > CFL_BODY_MAX_PARTS) { dbglog("cfliqmParse: num_meshes %lu exceeds CFL_BODY_MAX_PARTS\n", (unsigned long)hdr.num_meshes); return false; }
+	if (!CFLI_IQM_FITS(hdr.ofs_meshes, hdr.num_meshes, sizeof(CFLiIqmMesh))) { dbglog("cfliqmParse: meshes out of bounds\n"); return false; }
+	if (!CFLI_IQM_FITS(hdr.ofs_triangles, hdr.num_triangles, sizeof(CFLiIqmTriangle))) { dbglog("cfliqmParse: triangles out of bounds\n"); return false; }
+
+	out->partCount = hdr.num_meshes;
+	for (u32 m = 0; m < hdr.num_meshes; m++) {
+		CFLiIqmMesh mesh;
+		memcpy(&mesh, data + hdr.ofs_meshes + (size_t)m * sizeof(mesh), sizeof(mesh));
+		if ((u64)mesh.first_vertex + mesh.num_vertexes > hdr.num_vertexes) { dbglog("cfliqmParse: mesh %lu vertex range out of bounds\n", (unsigned long)m); return false; }
+		if ((u64)mesh.first_triangle + mesh.num_triangles > hdr.num_triangles) { dbglog("cfliqmParse: mesh %lu triangle range out of bounds\n", (unsigned long)m); return false; }
+		if (mesh.num_vertexes > 256) { dbglog("cfliqmParse: mesh %lu has %lu verts, exceeds this project's own u8 index limit\n", (unsigned long)m, (unsigned long)mesh.num_vertexes); return false; }
+
+		if (mesh.material >= hdr.num_text) { dbglog("cfliqmParse: mesh %lu material text offset out of bounds\n", (unsigned long)m); return false; }
+		const char* materialName = text + mesh.material;
+		u32 materialIndex;
+		if (strcmp(materialName, "mt_body") == 0) materialIndex = 0;
+		else if (strcmp(materialName, "mt_pants") == 0) materialIndex = 1;
+		else { dbglog("cfliqmParse: mesh %lu has unrecognized material \"%s\" - refusing to guess\n", (unsigned long)m, materialName); return false; }
+
+		CFLiBodyPart* part = &out->parts[m];
+		part->materialIndex = materialIndex;
+		part->vertexCount = mesh.num_vertexes;
+		part->vertices = malloc(sizeof(CFLiBodyRawVertex) * mesh.num_vertexes);
+		if (!part->vertices) return false;
+		for (u32 v = 0; v < mesh.num_vertexes; v++) {
+			u32 srcV = mesh.first_vertex + v;
+			CFLiBodyRawVertex* dst = &part->vertices[v];
+			dst->position[0] = vaPosition[srcV * 3 + 0]; dst->position[1] = vaPosition[srcV * 3 + 1]; dst->position[2] = vaPosition[srcV * 3 + 2];
+			dst->normal[0] = vaNormal[srcV * 3 + 0]; dst->normal[1] = vaNormal[srcV * 3 + 1]; dst->normal[2] = vaNormal[srcV * 3 + 2];
+			for (int k = 0; k < 4; k++) {
+				dst->boneIndex[k] = vaBlendIndexes[srcV * 4 + k];
+				dst->boneWeight[k] = vaBlendWeights[srcV * 4 + k];
+			}
+		}
+
+		part->indexCount = mesh.num_triangles * 3;
+		part->indices = malloc(part->indexCount);
+		if (!part->indices) { free(part->vertices); return false; }
+		for (u32 t = 0; t < mesh.num_triangles; t++) {
+			CFLiIqmTriangle tri;
+			memcpy(&tri, data + hdr.ofs_triangles + (size_t)(mesh.first_triangle + t) * sizeof(tri), sizeof(tri));
+			for (int k = 0; k < 3; k++) {
+				if (tri.vertex[k] < mesh.first_vertex || tri.vertex[k] >= mesh.first_vertex + mesh.num_vertexes) {
+					dbglog("cfliqmParse: mesh %lu triangle %lu references a vertex outside its own mesh\n", (unsigned long)m, (unsigned long)t);
+					free(part->indices); free(part->vertices);
+					return false;
+				}
+				part->indices[t * 3 + k] = (u8)(tri.vertex[k] - mesh.first_vertex);
+			}
+		}
+	}
+
+	if (hdr.num_poses && !CFLI_IQM_FITS(hdr.ofs_poses, hdr.num_poses, sizeof(CFLiIqmPose))) { dbglog("cfliqmParse: poses out of bounds\n"); return false; }
+	if (hdr.num_anims && !CFLI_IQM_FITS(hdr.ofs_anims, hdr.num_anims, sizeof(CFLiIqmAnim))) { dbglog("cfliqmParse: anims out of bounds\n"); return false; }
+	if (hdr.num_frames && hdr.num_framechannels && !CFLI_IQM_FITS(hdr.ofs_frames, (u64)hdr.num_frames * hdr.num_framechannels, sizeof(u16))) { dbglog("cfliqmParse: frames out of bounds\n"); return false; }
+	if (hdr.num_poses && !CFLI_IQM_FITS(hdr.ofs_bounds, hdr.num_frames, sizeof(float) * 8)) {  }
+
+	dbglog("cfliqmParse: parsed OK - %lu joint(s), %lu mesh(es), %lu pose(s), %lu anim(s), %lu frame(s)\n",
+		(unsigned long)hdr.num_joints, (unsigned long)hdr.num_meshes, (unsigned long)hdr.num_poses, (unsigned long)hdr.num_anims, (unsigned long)hdr.num_frames);
 	return true;
+
+	#undef CFLI_IQM_FITS
 }
 
 static void cflBoneCategoryScale(u32 category, const float bodyScale[3], float out[3])
@@ -1989,19 +2188,40 @@ static void cflBuildBodyPart(CFLBodyModel* body, const CFLiBodyPart* srcPart,
 
 	for (u32 v = 0; v < srcPart->vertexCount; v++) {
 		const CFLiBodyRawVertex* rv = &srcPart->vertices[v];
-		u32 b = rv->boneIndex;
-		const float* piv = bones[b].pivot;
-		const float* wp = worldPivot[b];
-		const float* cs = ownScale[b];
-		for (int k = 0; k < 3; k++)
-			positions[v * 3 + k] = wp[k] + cs[k] * (rv->position[k] - piv[k]);
+		float pos[3] = { 0.0f, 0.0f, 0.0f };
+		float nrm[3] = { 0.0f, 0.0f, 0.0f };
+		u32 totalWeight = 0;
+		for (int k = 0; k < 4; k++) {
+			u32 w = rv->boneWeight[k];
+			if (w == 0) continue;
+			u32 b = rv->boneIndex[k];
+			const float* piv = bones[b].pivot;
+			const float* wp = worldPivot[b];
+			const float* cs = ownScale[b];
+			float wf = (float)w / 255.0f;
+			for (int c = 0; c < 3; c++)
+				pos[c] += wf * (wp[c] + cs[c] * (rv->position[c] - piv[c]));
 
-		float nx = rv->normal[0] / cs[0];
-		float ny = rv->normal[1] / cs[1];
-		float nz = rv->normal[2] / cs[2];
-		float len = sqrtf(nx * nx + ny * ny + nz * nz);
-		if (len > 1e-8f) { nx /= len; ny /= len; nz /= len; }
-		normals[v * 3 + 0] = nx; normals[v * 3 + 1] = ny; normals[v * 3 + 2] = nz;
+			nrm[0] += wf * (rv->normal[0] / cs[0]);
+			nrm[1] += wf * (rv->normal[1] / cs[1]);
+			nrm[2] += wf * (rv->normal[2] / cs[2]);
+			totalWeight += w;
+		}
+		if (totalWeight == 0) {
+
+			const float* piv = bones[0].pivot;
+			const float* wp = worldPivot[0];
+			const float* cs = ownScale[0];
+			for (int c = 0; c < 3; c++)
+				pos[c] = wp[c] + cs[c] * (rv->position[c] - piv[c]);
+			nrm[0] = rv->normal[0] / cs[0];
+			nrm[1] = rv->normal[1] / cs[1];
+			nrm[2] = rv->normal[2] / cs[2];
+		}
+		float len = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
+		if (len > 1e-8f) { nrm[0] /= len; nrm[1] /= len; nrm[2] /= len; }
+		positions[v * 3 + 0] = pos[0]; positions[v * 3 + 1] = pos[1]; positions[v * 3 + 2] = pos[2];
+		normals[v * 3 + 0] = nrm[0]; normals[v * 3 + 1] = nrm[1]; normals[v * 3 + 2] = nrm[2];
 	}
 
 	CFLModel model;
@@ -2034,7 +2254,7 @@ bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFL
 	if (!bodyData || !mii) return false;
 
 	CFLiBodyFile file;
-	if (!cflbParse(bodyData, bodySize, &file)) return false;
+	if (!cfliqmParse(bodyData, bodySize, &file)) return false;
 
 	cflGetBodyScale(mii->width, mii->height, outBody->bodyScale);
 
@@ -2060,7 +2280,7 @@ bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFL
 	for (u32 i = 0; i < file.partCount; i++) {
 		CFLiBodyPart* part = &file.parts[i];
 		cflBuildBodyPart(outBody, part, worldPivot, ownScale, file.bones, part->materialIndex == 0 ? bodyColor : pantsColor);
-		cflbFreePart(part);
+		cfliqmFreePart(part);
 	}
 
 	if (outBody->partCount == 0) {
@@ -2538,58 +2758,6 @@ static void cflIconDrawBodyParts(const CFLBodyModel* body, const C3D_Mtx* iconPr
 	dbglog("cflIconDrawBodyParts: all %lu part(s) queued\n", (unsigned long)body->partCount);
 }
 
-#define CFL_ICON_TARGET_CACHE_SIZE 4
-typedef struct {
-	C3D_Tex* texPtr;
-	int size;
-	C3D_RenderTarget* target;
-	bool valid;
-} CflIconTargetCacheEntry;
-static CflIconTargetCacheEntry s_iconTargetCache[CFL_ICON_TARGET_CACHE_SIZE];
-
-static C3D_RenderTarget* cflAcquireIconTarget(C3D_Tex* outIcon, int iconSize, bool* outIsFresh)
-{
-	for (int i = 0; i < CFL_ICON_TARGET_CACHE_SIZE; i++) {
-		if (s_iconTargetCache[i].valid && s_iconTargetCache[i].texPtr == outIcon && s_iconTargetCache[i].size == iconSize) {
-			*outIsFresh = false;
-			return s_iconTargetCache[i].target;
-		}
-	}
-
-	if (outIcon->data) C3D_TexDelete(outIcon);
-	if (!C3D_TexInitVRAM(outIcon, iconSize, iconSize, GPU_RGBA8)) return NULL;
-	C3D_RenderTarget* target = C3D_RenderTargetCreateFromTex(outIcon, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
-	if (!target) { C3D_TexDelete(outIcon); return NULL; }
-
-	int slot = -1;
-	for (int i = 0; i < CFL_ICON_TARGET_CACHE_SIZE; i++) if (!s_iconTargetCache[i].valid) { slot = i; break; }
-	if (slot < 0) {
-
-		C3D_RenderTargetDelete(s_iconTargetCache[0].target);
-		slot = 0;
-	}
-	s_iconTargetCache[slot].texPtr = outIcon;
-	s_iconTargetCache[slot].size = iconSize;
-	s_iconTargetCache[slot].target = target;
-	s_iconTargetCache[slot].valid = true;
-	*outIsFresh = true;
-	return target;
-}
-
-void CFL_ReleaseIconTarget(C3D_Tex* outIcon)
-{
-	for (int i = 0; i < CFL_ICON_TARGET_CACHE_SIZE; i++) {
-		if (s_iconTargetCache[i].valid && s_iconTargetCache[i].texPtr == outIcon) {
-
-			C3D_FrameSync();
-			C3D_RenderTargetDelete(s_iconTargetCache[i].target);
-			s_iconTargetCache[i].valid = false;
-			break;
-		}
-	}
-	if (outIcon->data) C3D_TexDelete(outIcon);
-}
-
 bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon)
 {
 
@@ -2601,13 +2769,17 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 	if (!cm || !cm->valid || cm->partCount == 0 || iconSize <= 0 || !outIcon) return false;
 	ensureDefaultShaderInit();
 
-	bool isFreshTarget = false;
-	C3D_RenderTarget* iconTarget = cflAcquireIconTarget(outIcon, iconSize, &isFreshTarget);
-	if (!iconTarget) {
-		dbglog("CFL_CommandMakeModelIcon: cflAcquireIconTarget failed (%dx%d)\n", iconSize, iconSize);
+	if (outIcon->data) C3D_TexDelete(outIcon);
+	if (!C3D_TexInitVRAM(outIcon, iconSize, iconSize, GPU_RGBA8)) {
+		dbglog("CFL_CommandMakeModelIcon: C3D_TexInitVRAM failed (%dx%d)\n", iconSize, iconSize);
 		return false;
 	}
-	dbglog("CFL_CommandMakeModelIcon: using %s render target\n", isFreshTarget ? "freshly created" : "cached/reused");
+	C3D_RenderTarget* iconTarget = C3D_RenderTargetCreateFromTex(outIcon, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
+	if (!iconTarget) {
+		dbglog("CFL_CommandMakeModelIcon: C3D_RenderTargetCreateFromTex failed (%dx%d)\n", iconSize, iconSize);
+		C3D_TexDelete(outIcon);
+		return false;
+	}
 
 	C3D_Mtx iconProjection, iconModelView;
 	Mtx_Persp(&iconProjection, C3D_AngleFromDegrees(9.8762f), 1.0f, 500.0f, 1000.0f, false);
@@ -2696,6 +2868,8 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 
 	dbglog("CFL_CommandMakeModelIcon: C3D_FrameEnd returned, finishing up\n");
 
+	C3D_FrameSync();
+	C3D_RenderTargetDelete(iconTarget);
 	C3D_TexSetFilter(outIcon, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(outIcon, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
 	dbglog("CFL_CommandMakeModelIcon: done\n");

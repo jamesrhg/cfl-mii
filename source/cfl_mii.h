@@ -182,8 +182,6 @@ void CFL_DeleteBodyModel(CFLBodyModel* body);
 
 #define CFL_HEAD_TO_BODY_SCALE (10.0f / 7.0f)
 
-void CFL_ReleaseIconTarget(C3D_Tex* outIcon);
-
 #ifdef __cplusplus
 }
 #endif
