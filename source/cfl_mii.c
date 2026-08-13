@@ -1,3 +1,4 @@
+
 #include <3ds.h>
 #include <citro3d.h>
 #include <stdio.h>
@@ -87,7 +88,7 @@ typedef struct {
 	u32 vertexCount;
 
 	u8* indices;
-
+	                     
 	u32 indexCount;
 } CFLModel;
 
@@ -401,7 +402,7 @@ static bool loadResModel(const u8* data, u32 size, u32 sectionIndex, u32 itemInd
 
 	u32 prefix = itemPrefixSize(sectionIndex);
 	if (itemRemaining > prefix && parseGeometry(item + prefix, itemRemaining - prefix, out)) {
-
+		
 		if (sectionIndex == CFL_SECTION_MASK && out->texcoords && out->vertexCount > 0) {
 			float uMin = out->texcoords[0], uMax = out->texcoords[0];
 			float vMin = out->texcoords[1], vMax = out->texcoords[1];
@@ -616,14 +617,14 @@ static const CFLExpressionTypes kExpressionTypes[CFL_EXPRESSION_COUNT] = {
 	 { 2, 2, 3, -2, -2,  0 },
 	 { 3, 3, 3,  0,  0, -2 },
 	 { 4, 4, 3,  0,  0,  0 },
-
+	
 	 { 5, 0, 0,  0,  0,  0 },
 	 { 0, 5, 0,  0,  0,  0 },
 	 { 5, 0, 3,  0,  0,  0 },
 	 { 0, 5, 3,  0,  0,  0 },
 	 { 5, 0, 5,  0,  0,  0 },
 	 { 0, 5, 5,  0,  0,  0 },
-
+	
 	 { 5, 5, 2,  0,  0,  0 },
 };
 
@@ -732,7 +733,7 @@ static void addPart(CFLCharModel* cm, const CFLModel* model, const float transla
 	part->isAlphaOnly = false;
 	part->depthWrite = true;
 	part->noSpecular = noSpecular;
-
+	
 	part->capBlend = false;
 
 	if (model->indices && model->indexCount >= 3) {
@@ -817,7 +818,7 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 	part->vbo = buildVertices(&model, translate, partScale, flipX, &count);
 	part->vertexCount = count;
 	bool needsTint = tex.format < CFL_TEXFMT_RG8;
-
+	
 	float capHalvedTint[3];
 	const float* effectiveTint = tint;
 	if (capBlend && needsTint) {
@@ -855,7 +856,7 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 		return;
 	}
 	C3D_TexUpload(&part->tex, tex.data);
-
+	
 	C3D_TexFlush(&part->tex);
 	C3D_TexSetFilter(&part->tex, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(&part->tex, cflToGpuWrap[tex.uWrap < 3 ? tex.uWrap : 0], cflToGpuWrap[tex.vWrap < 3 ? tex.vWrap : 0]);
@@ -947,7 +948,7 @@ static void buildMaskQuad(const MaskPartsDesc* d, Vertex outVerts[4], bool flipV
 
 static void uploadMaterialColor(const float color[3])
 {
-
+	
 	C3D_Material mtl;
 	mtl.ambient[0] = color[2]; mtl.ambient[1] = color[1]; mtl.ambient[2] = color[0];
 	mtl.diffuse[0] = mtl.diffuse[1] = mtl.diffuse[2] = 0.0f;
@@ -1018,7 +1019,7 @@ static void drawDecalVerts(const Vertex verts[4], const CFLTexture* tex, const f
 		return;
 	}
 	C3D_TexUpload(&gpuTex, tex->data);
-
+	
 	C3D_TexFlush(&gpuTex);
 	C3D_TexSetFilter(&gpuTex, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(&gpuTex, cflToGpuWrap[tex->uWrap < 3 ? tex->uWrap : 0], cflToGpuWrap[tex->vWrap < 3 ? tex->vWrap : 0]);
@@ -1031,7 +1032,7 @@ static void drawDecalVerts(const Vertex verts[4], const CFLTexture* tex, const f
 	C3D_TexEnv* env = C3D_GetTexEnv(0);
 	C3D_TexEnvInit(env);
 	bool isAlphaOnly = (tex->format == CFL_TEXFMT_A4 || tex->format == CFL_TEXFMT_A8);
-
+	
 	if (isAlphaOnly) {
 		C3D_TexEnvSrc(env, C3D_RGB, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
 		C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
@@ -1103,11 +1104,11 @@ static void drawDualColorDecal(const MaskPartsDesc* d, const CFLTexture* tex, co
 		return;
 	}
 	C3D_TexUpload(&gpuTex, tex->data);
-
+	
 	C3D_TexFlush(&gpuTex);
 	C3D_TexSetFilter(&gpuTex, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(&gpuTex, cflToGpuWrap[tex->uWrap < 3 ? tex->uWrap : 0], cflToGpuWrap[tex->vWrap < 3 ? tex->vWrap : 0]);
-
+	
 	C3D_TexBind(0, &gpuTex);
 
 	C3D_BufInfo* bufInfo = C3D_GetBufInfo();
@@ -1274,7 +1275,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		dbglog("(C3D_TexInitVRAM failed for face mask, skipping)\n");
 		return false;
 	}
-
+	
 	C3D_RenderTarget* maskTarget = C3D_RenderTargetCreateFromTex(&maskTex, GPU_TEXFACE_2D, 0, -1);
 	if (!maskTarget) {
 		dbglog("(C3D_RenderTargetCreateFromTex failed for face mask, skipping)\n");
@@ -1286,13 +1287,13 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 	Mtx_Identity(&identity);
 
 	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-
+		
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
 		C3D_FrameDrawOn(maskTarget);
 		C3D_SetViewport(0, 0, canvasSize, canvasSize);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, &identity);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  &identity);
-
+		
 		C3D_LightEnvBind(&s_bakeLightEnv);
 		C3D_CullFace(GPU_CULL_NONE);
 		C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_ALL);
@@ -1304,7 +1305,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 
 		if (mii->mole_details.enable) {
 			d = (MaskPartsDesc){ { molePosX, molePosY }, { moleScale, moleScale }, 0.0f, MASK_ORIGIN_CENTER };
-
+			
 			C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ONE_MINUS_SRC_ALPHA);
 			if (loadResTexture(cflData, cflSize, CFL_SECTION_MOLE, 1, &tex))
 				drawMaskDecal(&d, &tex, moleColor);
@@ -1312,7 +1313,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		}
 
 		const float* eyeColor0 = getEyeColor0(mii->eye_details.style);
-
+		
 		bool flipVR = (types->eyeR == 4 || types->eyeR == 5);
 		bool flipVL = (types->eyeL == 4 || types->eyeL == 5);
 		d = (MaskPartsDesc){ { 32.0f - eyeSpacingX, eyePosY }, { eyeScaleX, eyeScaleYR }, eyeRotateR, MASK_ORIGIN_RIGHT };
@@ -1344,7 +1345,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 			if (loadResTexture(cflData, cflSize, CFL_SECTION_MUSTACHE, mii->mustache_details.mustache_style, &tex))
 				drawMaskDecal(&d, &tex, hairColors[beardColorIndex]);
 		}
-
+		
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
 	C3D_FrameEnd(0);
 	flushDecalCleanup();
@@ -1376,7 +1377,7 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 		dbglog("(C3D_TexInitVRAM failed for faceline texture, skipping)\n");
 		return false;
 	}
-
+	
 	C3D_RenderTarget* faceTarget = C3D_RenderTargetCreateFromTex(&faceTex, GPU_TEXFACE_2D, 0, -1);
 	if (!faceTarget) {
 		dbglog("(C3D_RenderTargetCreateFromTex failed for faceline texture, skipping)\n");
@@ -1393,14 +1394,14 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 		((u32)(skinColors[skinIndex][2] * 255.0f) << 8) | 0xFF;
 
 	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-
+		
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
 		C3D_RenderTargetClear(faceTarget, C3D_CLEAR_ALL, clearColor, 0);
 		C3D_FrameDrawOn(faceTarget);
 		C3D_SetViewport(0, 0, FACE_TEX_WIDTH, FACE_TEX_HEIGHT);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, &identity);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  &identity);
-
+		
 		C3D_LightEnvBind(&s_bakeLightEnv);
 		C3D_CullFace(GPU_CULL_NONE);
 		C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_ALL);
@@ -1466,7 +1467,7 @@ bool CFL_MakeStoreData(const MiiData* mii, CFLStoreData* out)
 	crcBytes[0] = 0;
 	crcBytes[1] = 0;
 	u16 crc = cflComputeCRC16(0, (const u8*)out, sizeof(CFLStoreData));
-
+	
 	crcBytes[0] = (u8)(crc >> 8);
 	crcBytes[1] = (u8)(crc & 0xFF);
 	return true;
@@ -1750,7 +1751,7 @@ static bool CFLi_AddRecentDBData(const MiiData* mii)
 
 	bool isNewEntry = false;
 	if (targetSlot < 0) {
-
+		
 		if (count < CFL_RECENT_SLOT_COUNT) {
 			for (int slot = 0; slot < CFL_RECENT_SLOT_COUNT; slot++) {
 				const u8* record = records + (u32)slot * CFL_RECENT_RECORD_SIZE;
@@ -1758,7 +1759,7 @@ static bool CFLi_AddRecentDBData(const MiiData* mii)
 			}
 		}
 		if (targetSlot < 0) {
-
+			
 			if (count == 0) {
 				dbglogErr("CFLi_AddRecentDBData: recent-DB count is 0 but no empty slot was found - refusing to write\n");
 				FSFILE_Close(file);
@@ -1825,8 +1826,6 @@ static void cflGetBodyScale(u8 build, u8 height, float outScale[3])
 	outScale[2] = x;
 }
 
-#define CFL_BODY_MAX_BONES 18
-
 #define CFLI_IQM_MAGIC "INTERQUAKEMODEL"
 #define CFLI_IQM_VERSION 2
 
@@ -1867,6 +1866,8 @@ typedef struct {
 	s32 parentBoneIndex;
 	float pivot[3];
 	u32 category;
+	
+	const char* name;
 } CFLiBodyBone;
 
 typedef struct {
@@ -1879,10 +1880,20 @@ typedef struct {
 typedef struct {
 	u32 materialIndex;
 	u32 vertexCount;
+	
 	CFLiBodyRawVertex* vertices;
 	u32 indexCount;
 	u8* indices;
 } CFLiBodyPart;
+
+typedef struct {
+	u32 nrBones;
+	CFLiBodyBone bones[CFL_BODY_MAX_BONES];
+	u32 headBoneIndex;
+	u32 partCount;
+	CFLiBodyPart rawParts[CFL_BODY_MAX_PARTS];
+	float partColor[CFL_BODY_MAX_PARTS][3];
+} CFLiBodyRig;
 
 typedef struct {
 	u32 nrBones;
@@ -1960,7 +1971,7 @@ static void cflComposeJointWorld(const CFLiIqmJoint* joints, u32 nrJoints, CFLiJ
 				outWorld[i].rot[r][c] = pw->rot[r][0] * localRot[0][c] + pw->rot[r][1] * localRot[1][c] + pw->rot[r][2] * localRot[2][c];
 			}
 		}
-
+		
 		outWorld[i].scale[0] = pw->scale[0] * ls[0];
 		outWorld[i].scale[1] = pw->scale[1] * ls[1];
 		outWorld[i].scale[2] = pw->scale[2] * ls[2];
@@ -2017,6 +2028,7 @@ static bool cfliqmParse(const u8* data, u32 size, CFLiBodyFile* out)
 		out->bones[i].pivot[2] = world[i].translate[2];
 		const char* name = (text && joints[i].name < hdr.num_text) ? (text + joints[i].name) : "";
 		out->bones[i].category = cflBoneCategoryFromName(name);
+		out->bones[i].name = name;
 		if (!foundHead && strcmp(name, "head") == 0) { out->headBoneIndex = i; foundHead = true; }
 	}
 	if (!foundHead) dbglog("cfliqmParse: no joint named \"head\" found - headBoneIndex defaults to 0\n");
@@ -2031,7 +2043,7 @@ static bool cfliqmParse(const u8* data, u32 size, CFLiBodyFile* out)
 		memcpy(&va, data + hdr.ofs_vertexarrays + (size_t)i * sizeof(va), sizeof(va));
 		u32 itemSize = cfliqmFormatSize(va.format);
 		if (itemSize == 0 || !CFLI_IQM_FITS(va.offset, hdr.num_vertexes, (u64)va.size * itemSize)) {
-
+			
 			if (va.type == CFLI_IQM_POSITION || va.type == CFLI_IQM_NORMAL || va.type == CFLI_IQM_BLENDINDEXES || va.type == CFLI_IQM_BLENDWEIGHTS) {
 				dbglog("cfliqmParse: required vertex array type=%lu out of bounds or bad format\n", (unsigned long)va.type);
 				return false;
@@ -2150,23 +2162,24 @@ static void cflBoneCategoryScale(u32 category, const float bodyScale[3], float o
 	}
 }
 
-static void cflComputeScaledBoneTransforms(const CFLiBodyBone* bones, u32 nrBones, const float bodyScale[3],
+static void cflComputeScaledBoneTransforms(const CFLiBodyBone* bones, u32 nrBones,
+	const float unscaledWorldPos[CFL_BODY_MAX_BONES][3], const float bodyScale[3],
 	float outWorldPivot[CFL_BODY_MAX_BONES][3], float outOwnScale[CFL_BODY_MAX_BONES][3])
 {
 	for (u32 i = 0; i < nrBones; i++) {
 		cflBoneCategoryScale(bones[i].category, bodyScale, outOwnScale[i]);
 		s32 parent = bones[i].parentBoneIndex;
 		if (parent < 0) {
-			outWorldPivot[i][0] = bones[i].pivot[0];
-			outWorldPivot[i][1] = bones[i].pivot[1];
-			outWorldPivot[i][2] = bones[i].pivot[2];
+			outWorldPivot[i][0] = unscaledWorldPos[i][0];
+			outWorldPivot[i][1] = unscaledWorldPos[i][1];
+			outWorldPivot[i][2] = unscaledWorldPos[i][2];
 		} else {
 			const float* parentPivot = outWorldPivot[parent];
 			const float* parentScale = outOwnScale[parent];
 			float localOffset[3] = {
-				bones[i].pivot[0] - bones[parent].pivot[0],
-				bones[i].pivot[1] - bones[parent].pivot[1],
-				bones[i].pivot[2] - bones[parent].pivot[2],
+				unscaledWorldPos[i][0] - unscaledWorldPos[parent][0],
+				unscaledWorldPos[i][1] - unscaledWorldPos[parent][1],
+				unscaledWorldPos[i][2] - unscaledWorldPos[parent][2],
 			};
 			outWorldPivot[i][0] = parentPivot[0] + parentScale[0] * localOffset[0];
 			outWorldPivot[i][1] = parentPivot[1] + parentScale[1] * localOffset[1];
@@ -2175,16 +2188,20 @@ static void cflComputeScaledBoneTransforms(const CFLiBodyBone* bones, u32 nrBone
 	}
 }
 
-static void cflBuildBodyPart(CFLBodyModel* body, const CFLiBodyPart* srcPart,
-	const float worldPivot[CFL_BODY_MAX_BONES][3], const float ownScale[CFL_BODY_MAX_BONES][3],
-	const CFLiBodyBone* bones, const float color[3])
+static void cflMat3MulVec3(const float m[3][3], const float v[3], float out[3])
 {
-	if (body->partCount >= CFL_BODY_MAX_PARTS) return;
-	CFLBodyPart* part = &body->parts[body->partCount];
+	out[0] = m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2];
+	out[1] = m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2];
+	out[2] = m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2];
+}
 
+static bool cflSkinBodyPart(CFLBodyPart* outPart, const CFLiBodyPart* srcPart,
+	const float worldPivot[CFL_BODY_MAX_BONES][3], const float ownScale[CFL_BODY_MAX_BONES][3],
+	const float rot[CFL_BODY_MAX_BONES][3][3], const CFLiBodyBone* bones, const float color[3])
+{
 	float* positions = malloc(sizeof(float) * 3 * srcPart->vertexCount);
 	float* normals = malloc(sizeof(float) * 3 * srcPart->vertexCount);
-	if (!positions || !normals) { free(positions); free(normals); return; }
+	if (!positions || !normals) { free(positions); free(normals); return false; }
 
 	for (u32 v = 0; v < srcPart->vertexCount; v++) {
 		const CFLiBodyRawVertex* rv = &srcPart->vertices[v];
@@ -2199,24 +2216,38 @@ static void cflBuildBodyPart(CFLBodyModel* body, const CFLiBodyPart* srcPart,
 			const float* wp = worldPivot[b];
 			const float* cs = ownScale[b];
 			float wf = (float)w / 255.0f;
-			for (int c = 0; c < 3; c++)
-				pos[c] += wf * (wp[c] + cs[c] * (rv->position[c] - piv[c]));
 
-			nrm[0] += wf * (rv->normal[0] / cs[0]);
-			nrm[1] += wf * (rv->normal[1] / cs[1]);
-			nrm[2] += wf * (rv->normal[2] / cs[2]);
+			float scaledOffset[3] = {
+				cs[0] * (rv->position[0] - piv[0]),
+				cs[1] * (rv->position[1] - piv[1]),
+				cs[2] * (rv->position[2] - piv[2]),
+			};
+			float rotatedOffset[3];
+			if (rot) cflMat3MulVec3(rot[b], scaledOffset, rotatedOffset);
+			else { rotatedOffset[0] = scaledOffset[0]; rotatedOffset[1] = scaledOffset[1]; rotatedOffset[2] = scaledOffset[2]; }
+			for (int c = 0; c < 3; c++)
+				pos[c] += wf * (wp[c] + rotatedOffset[c]);
+
+			float scaledNrm[3] = { rv->normal[0] / cs[0], rv->normal[1] / cs[1], rv->normal[2] / cs[2] };
+			float rotatedNrm[3];
+			if (rot) cflMat3MulVec3(rot[b], scaledNrm, rotatedNrm);
+			else { rotatedNrm[0] = scaledNrm[0]; rotatedNrm[1] = scaledNrm[1]; rotatedNrm[2] = scaledNrm[2]; }
+			nrm[0] += wf * rotatedNrm[0]; nrm[1] += wf * rotatedNrm[1]; nrm[2] += wf * rotatedNrm[2];
 			totalWeight += w;
 		}
 		if (totalWeight == 0) {
-
+			
 			const float* piv = bones[0].pivot;
 			const float* wp = worldPivot[0];
 			const float* cs = ownScale[0];
-			for (int c = 0; c < 3; c++)
-				pos[c] = wp[c] + cs[c] * (rv->position[c] - piv[c]);
-			nrm[0] = rv->normal[0] / cs[0];
-			nrm[1] = rv->normal[1] / cs[1];
-			nrm[2] = rv->normal[2] / cs[2];
+			float scaledOffset[3] = { cs[0] * (rv->position[0] - piv[0]), cs[1] * (rv->position[1] - piv[1]), cs[2] * (rv->position[2] - piv[2]) };
+			float rotatedOffset[3];
+			if (rot) cflMat3MulVec3(rot[0], scaledOffset, rotatedOffset);
+			else { rotatedOffset[0] = scaledOffset[0]; rotatedOffset[1] = scaledOffset[1]; rotatedOffset[2] = scaledOffset[2]; }
+			for (int c = 0; c < 3; c++) pos[c] = wp[c] + rotatedOffset[c];
+			float scaledNrm[3] = { rv->normal[0] / cs[0], rv->normal[1] / cs[1], rv->normal[2] / cs[2] };
+			if (rot) cflMat3MulVec3(rot[0], scaledNrm, nrm);
+			else { nrm[0] = scaledNrm[0]; nrm[1] = scaledNrm[1]; nrm[2] = scaledNrm[2]; }
 		}
 		float len = sqrtf(nrm[0] * nrm[0] + nrm[1] * nrm[1] + nrm[2] * nrm[2]);
 		if (len > 1e-8f) { nrm[0] /= len; nrm[1] /= len; nrm[2] /= len; }
@@ -2232,18 +2263,23 @@ static void cflBuildBodyPart(CFLBodyModel* body, const CFLiBodyPart* srcPart,
 
 	static const float noTranslate[3] = { 0.0f, 0.0f, 0.0f };
 	u32 vcount;
-	part->vbo = buildVertices(&model, noTranslate, 1.0f, false, &vcount);
-	part->vertexCount = vcount;
-	part->ibo = linearAlloc(srcPart->indexCount);
-	memcpy(part->ibo, srcPart->indices, srcPart->indexCount);
-	part->indexCount = srcPart->indexCount;
-	part->color[0] = color[0];
-	part->color[1] = color[1];
-	part->color[2] = color[2];
-	body->partCount++;
+	void* newVbo = buildVertices(&model, noTranslate, 1.0f, false, &vcount);
+	void* newIbo = linearAlloc(srcPart->indexCount);
+	memcpy(newIbo, srcPart->indices, srcPart->indexCount);
+
+	if (outPart->vbo) linearFree(outPart->vbo);
+	if (outPart->ibo) linearFree(outPart->ibo);
+	outPart->vbo = newVbo;
+	outPart->vertexCount = vcount;
+	outPart->ibo = newIbo;
+	outPart->indexCount = srcPart->indexCount;
+	outPart->color[0] = color[0];
+	outPart->color[1] = color[1];
+	outPart->color[2] = color[2];
 
 	free(positions);
 	free(normals);
+	return true;
 }
 
 bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFLBodyModel* outBody)
@@ -2258,9 +2294,15 @@ bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFL
 
 	cflGetBodyScale(mii->width, mii->height, outBody->bodyScale);
 
+	float bindPos[CFL_BODY_MAX_BONES][3];
+	for (u32 i = 0; i < file.nrBones; i++) {
+		bindPos[i][0] = file.bones[i].pivot[0];
+		bindPos[i][1] = file.bones[i].pivot[1];
+		bindPos[i][2] = file.bones[i].pivot[2];
+	}
 	float worldPivot[CFL_BODY_MAX_BONES][3];
 	float ownScale[CFL_BODY_MAX_BONES][3];
-	cflComputeScaledBoneTransforms(file.bones, file.nrBones, outBody->bodyScale, worldPivot, ownScale);
+	cflComputeScaledBoneTransforms(file.bones, file.nrBones, bindPos, outBody->bodyScale, worldPivot, ownScale);
 
 	if (file.headBoneIndex < file.nrBones) {
 		outBody->hasHeadBone = true;
@@ -2277,19 +2319,53 @@ bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFL
 	const float* pantsColor = pantsColors[isSpecialMii ? 3 : 0];
 	const float* bodyColor = CFL_GetFavoriteColor(mii->mii_details.shirt_color);
 
+	CFLiBodyRig* rig = malloc(sizeof(CFLiBodyRig));
+	if (rig) {
+		rig->nrBones = file.nrBones;
+		memcpy(rig->bones, file.bones, sizeof(CFLiBodyBone) * file.nrBones);
+		rig->headBoneIndex = file.headBoneIndex;
+		rig->partCount = 0;
+	}
+
 	for (u32 i = 0; i < file.partCount; i++) {
 		CFLiBodyPart* part = &file.parts[i];
-		cflBuildBodyPart(outBody, part, worldPivot, ownScale, file.bones, part->materialIndex == 0 ? bodyColor : pantsColor);
-		cfliqmFreePart(part);
+		const float* color = part->materialIndex == 0 ? bodyColor : pantsColor;
+		if (cflSkinBodyPart(&outBody->parts[outBody->partCount], part, worldPivot, ownScale, NULL, file.bones, color)) {
+			if (rig) {
+				
+				rig->rawParts[rig->partCount] = *part;
+				rig->partColor[rig->partCount][0] = color[0];
+				rig->partColor[rig->partCount][1] = color[1];
+				rig->partColor[rig->partCount][2] = color[2];
+				rig->partCount++;
+			} else {
+				cfliqmFreePart(part);
+			}
+			outBody->partCount++;
+		} else {
+			cfliqmFreePart(part);
+		}
 	}
 
 	if (outBody->partCount == 0) {
 		dbglog("CFL_LoadBodyModel: no body/pants parts were successfully loaded\n");
+		free(rig);
 		return false;
 	}
-	dbglog("CFL_LoadBodyModel: done, %lu part(s), hasHeadBone=%d, head world pos=(%.2f,%.2f,%.2f)\n",
+	if (rig && rig->partCount != outBody->partCount) {
+		
+		dbglog("CFL_LoadBodyModel: rig part count mismatch, disabling animation playback for this body\n");
+		for (u32 i = 0; i < rig->partCount; i++) cfliqmFreePart(&rig->rawParts[i]);
+		free(rig);
+		rig = NULL;
+	}
+	outBody->rig = rig;
+	if (!rig) dbglog("CFL_LoadBodyModel: no rig retained - CFL_PoseBodyModel will not work for this body\n");
+
+	dbglog("CFL_LoadBodyModel: done, %lu part(s), hasHeadBone=%d, head world pos=(%.2f,%.2f,%.2f), rig=%s\n",
 		(unsigned long)outBody->partCount, outBody->hasHeadBone,
-		outBody->headBoneWorldMatrix[3], outBody->headBoneWorldMatrix[7], outBody->headBoneWorldMatrix[11]);
+		outBody->headBoneWorldMatrix[3], outBody->headBoneWorldMatrix[7], outBody->headBoneWorldMatrix[11],
+		rig ? "yes" : "no");
 	return true;
 }
 
@@ -2299,7 +2375,114 @@ void CFL_DeleteBodyModel(CFLBodyModel* body)
 		if (body->parts[i].vbo) linearFree(body->parts[i].vbo);
 		if (body->parts[i].ibo) linearFree(body->parts[i].ibo);
 	}
+	if (body->rig) {
+		CFLiBodyRig* rig = (CFLiBodyRig*)body->rig;
+		for (u32 i = 0; i < rig->partCount; i++) cfliqmFreePart(&rig->rawParts[i]);
+		free(rig);
+	}
 	memset(body, 0, sizeof(*body));
+}
+
+u32 CFL_GetBodyBoneCount(const CFLBodyModel* body)
+{
+	if (!body || !body->rig) return 0;
+	return ((const CFLiBodyRig*)body->rig)->nrBones;
+}
+
+const char* CFL_GetBodyBoneName(const CFLBodyModel* body, u32 boneIndex)
+{
+	if (!body || !body->rig) return NULL;
+	const CFLiBodyRig* rig = (const CFLiBodyRig*)body->rig;
+	if (boneIndex >= rig->nrBones) return NULL;
+	return rig->bones[boneIndex].name;
+}
+
+static void cflComputeBindLocalPose(const CFLiBodyRig* rig, u32 i, CFLBoneLocalPose* out)
+{
+	s32 parent = rig->bones[i].parentBoneIndex;
+	const float* piv = rig->bones[i].pivot;
+	if (parent < 0) {
+		out->translate[0] = piv[0]; out->translate[1] = piv[1]; out->translate[2] = piv[2];
+	} else {
+		const float* parentPiv = rig->bones[parent].pivot;
+		out->translate[0] = piv[0] - parentPiv[0];
+		out->translate[1] = piv[1] - parentPiv[1];
+		out->translate[2] = piv[2] - parentPiv[2];
+	}
+	out->rotate[0] = 0.0f; out->rotate[1] = 0.0f; out->rotate[2] = 0.0f; out->rotate[3] = 1.0f;
+	out->scale[0] = out->scale[1] = out->scale[2] = 1.0f;
+}
+
+bool CFL_GetBodyBoneBindLocalPose(const CFLBodyModel* body, u32 boneIndex, CFLBoneLocalPose* outPose)
+{
+	if (!body || !body->rig || !outPose) return false;
+	const CFLiBodyRig* rig = (const CFLiBodyRig*)body->rig;
+	if (boneIndex >= rig->nrBones) return false;
+	cflComputeBindLocalPose(rig, boneIndex, outPose);
+	return true;
+}
+
+bool CFL_PoseBodyModel(CFLBodyModel* body, const CFLBoneLocalPose* poses, u32 boneCount)
+{
+	if (!body || !body->rig) return false;
+	CFLiBodyRig* rig = (CFLiBodyRig*)body->rig;
+	if (poses && boneCount != rig->nrBones) return false;
+
+	CFLiIqmJoint localJoints[CFL_BODY_MAX_BONES];
+	memset(localJoints, 0, sizeof(localJoints));
+	for (u32 i = 0; i < rig->nrBones; i++) {
+		localJoints[i].parent = rig->bones[i].parentBoneIndex;
+		if (poses) {
+			localJoints[i].translate[0] = poses[i].translate[0];
+			localJoints[i].translate[1] = poses[i].translate[1];
+			localJoints[i].translate[2] = poses[i].translate[2];
+			localJoints[i].rotate[0] = poses[i].rotate[0];
+			localJoints[i].rotate[1] = poses[i].rotate[1];
+			localJoints[i].rotate[2] = poses[i].rotate[2];
+			localJoints[i].rotate[3] = poses[i].rotate[3];
+			localJoints[i].scale[0] = poses[i].scale[0];
+			localJoints[i].scale[1] = poses[i].scale[1];
+			localJoints[i].scale[2] = poses[i].scale[2];
+		} else {
+			CFLBoneLocalPose bind;
+			cflComputeBindLocalPose(rig, i, &bind);
+			memcpy(localJoints[i].translate, bind.translate, sizeof(bind.translate));
+			memcpy(localJoints[i].rotate, bind.rotate, sizeof(bind.rotate));
+			memcpy(localJoints[i].scale, bind.scale, sizeof(bind.scale));
+		}
+	}
+
+	CFLiJointWorld animWorld[CFL_BODY_MAX_BONES];
+	cflComposeJointWorld(localJoints, rig->nrBones, animWorld);
+
+	float animPos[CFL_BODY_MAX_BONES][3];
+	float animRot[CFL_BODY_MAX_BONES][3][3];
+	for (u32 i = 0; i < rig->nrBones; i++) {
+		animPos[i][0] = animWorld[i].translate[0];
+		animPos[i][1] = animWorld[i].translate[1];
+		animPos[i][2] = animWorld[i].translate[2];
+		memcpy(animRot[i], animWorld[i].rot, sizeof(animRot[i]));
+	}
+
+	float worldPivot[CFL_BODY_MAX_BONES][3];
+	float ownScale[CFL_BODY_MAX_BONES][3];
+	cflComputeScaledBoneTransforms(rig->bones, rig->nrBones, animPos, body->bodyScale, worldPivot, ownScale);
+
+	for (u32 i = 0; i < rig->partCount; i++) {
+		cflSkinBodyPart(&body->parts[i], &rig->rawParts[i], worldPivot, ownScale, animRot, rig->bones, rig->partColor[i]);
+	}
+
+	if (body->hasHeadBone && rig->headBoneIndex < rig->nrBones) {
+		u32 h = rig->headBoneIndex;
+		const float (*r)[3] = animRot[h];
+		body->headBoneWorldMatrix[0] = r[0][0]; body->headBoneWorldMatrix[1] = r[0][1]; body->headBoneWorldMatrix[2] = r[0][2];
+		body->headBoneWorldMatrix[3] = worldPivot[h][0];
+		body->headBoneWorldMatrix[4] = r[1][0]; body->headBoneWorldMatrix[5] = r[1][1]; body->headBoneWorldMatrix[6] = r[1][2];
+		body->headBoneWorldMatrix[7] = worldPivot[h][1];
+		body->headBoneWorldMatrix[8] = r[2][0]; body->headBoneWorldMatrix[9] = r[2][1]; body->headBoneWorldMatrix[10] = r[2][2];
+		body->headBoneWorldMatrix[11] = worldPivot[h][2];
+	}
+	return true;
 }
 
 void CFL_AttachBody(CFLCharModel* cm, const CFLBodyModel* body)
@@ -2329,7 +2512,7 @@ bool CFL_Initialize(void)
 	uLoc_modelView    = shaderInstanceGetUniformLocation(program.vertexShader, "modelView");
 
 	C3D_LightEnvInit(&s_bakeLightEnv);
-
+	
 	C3D_LightEnvAmbient(&s_bakeLightEnv, 0.0f, 0.0f, 0.0f);
 	C3D_LightInit(&s_bakeLight, &s_bakeLightEnv);
 	C3D_LightAmbient(&s_bakeLight, 1.0f, 1.0f, 1.0f);
@@ -2357,7 +2540,7 @@ void CFL_RebindShader(void)
 
 	C3D_TexEnv* env = C3D_GetTexEnv(0);
 	C3D_TexEnvInit(env);
-
+	
 	C3D_TexEnvSrc(env, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
 	C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
 }
@@ -2370,7 +2553,7 @@ void CFL_Finalize(void)
 	g_cflResBuffer = NULL;
 	g_cflData = NULL;
 	g_cflSize = 0;
-
+	
 	g_cflDbCacheValid = false;
 }
 
@@ -2453,7 +2636,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	{
 		CFLModel canvasModel;
 		if (loadResModel(cflData, cflSize, CFL_SECTION_MASK, mii.face_style.shape, NULL, &canvasModel)) {
-
+			
 			int requestedCount = 0, bakedCount = 0;
 			u32 vramBeforeBakes = vramSpaceFree();
 			dbglog("CFL_InitCharModel: VRAM free before baking = %lu bytes (%.1f KB)\n", (unsigned long)vramBeforeBakes, vramBeforeBakes / 1024.0f);
@@ -2466,7 +2649,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 					cm->maskTexBaked[i] = true;
 					bakedCount++;
 				} else {
-
+					
 					dbglogErr("CFL_InitCharModel: FAILED to bake MASK for expression %s (likely VRAM exhaustion)\n", CFL_GetExpressionName((CFLExpression)i));
 					dbglogVramStats("  at failure", true);
 				}
@@ -2533,7 +2716,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		};
 		u8 glassColorIndex = mii.glasses_details.color;
 		if (glassColorIndex >= 8) glassColorIndex = 0;
-
+		
 		loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_GLASSES, 0,
 			CFL_SECTION_GLASSES_TEX, mii.glasses_details.style, glassPos, glassScale, false,
 			glassColors[glassColorIndex], NULL, true, false, false, "Glasses");
@@ -2615,7 +2798,7 @@ static void ensureDefaultShaderInit(void)
 	if (s_defaultLightReady) return;
 	s_defaultLightReady = true;
 	C3D_LightEnvInit(&s_defaultLightEnv);
-
+	
 	C3D_LightEnvAmbient(&s_defaultLightEnv, 0.0f, 0.0f, 0.0f);
 	LightLut_Phong(&s_defaultSpecularLut, 8.0f);
 	C3D_LightEnvLut(&s_defaultLightEnv, GPU_LUT_D0, GPU_LUTINPUT_NH, false, &s_defaultSpecularLut);
@@ -2760,7 +2943,7 @@ static void cflIconDrawBodyParts(const CFLBodyModel* body, const C3D_Mtx* iconPr
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon)
 {
-
+	
 	const CFLBodyModel* body = cm ? cm->attachedBody : NULL;
 
 	dbglog("CFL_CommandMakeModelIcon: start iconSize=%d hasBody=%d bodyPartCount=%lu\n",
@@ -2845,7 +3028,7 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 		dbglog("CFL_CommandMakeModelIcon: TexEnv1/2 setup returned\n");
 
 		const float CFL_ICON_BODY_SCALE = 1.0f;
-
+		
 		if (body && body->partCount > 0) {
 			C3D_Mtx bodyIconView = iconModelView;
 			if (body->hasHeadBone) {

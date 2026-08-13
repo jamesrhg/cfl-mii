@@ -13,7 +13,11 @@ format, and optionally attach a full-body model - loaded from a real,
 standard **IQM** file, not a project-specific format - to a
 `CFLCharModel` so both the real-time draw path and the icon renderer
 show head-on-body without any extra API surface - see
-[Body models](#body-models-optional) below.
+[Body models](#body-models-optional) below. A loaded body model can
+also be re-posed from your own application-supplied skeletal animation
+data (`CFL_PoseBodyModel`), correctly re-applying the same per-Mii
+build/height body scale to the animated pose - see
+[Animation playback](#animation-playback) below.
 
 Reverse-engineered from a retail 3DS title binary's debug info and
 cross-referenced against the real, compiled RFL (Wii) and FFL (Wii U)
@@ -269,6 +273,9 @@ typedef struct {
 
 #define CFL_BODY_MAX_PARTS 2
 
+#define CFL_BODY_MAX_BONES 18 // a real body skeleton this library ships has
+                               // 16 bones - a small margin above that
+
 typedef struct {
     CFLBodyPart parts[CFL_BODY_MAX_PARTS]; // body, pants
     int partCount;
@@ -279,11 +286,29 @@ typedef struct {
     float bodyScale[3]; // real nn::mii::detail::GetBodyScale(build,height) -
                          // how much THIS Mii's own build/height stretches
                          // the body model from its neutral pose
+    void* rig; // opaque - real skeleton + raw per-vertex skin data this
+               // body's own CFL_PoseBodyModel calls need, retained for the
+               // model's whole lifetime. Never touch this directly - it's
+               // NULL if CFL_LoadBodyModel couldn't retain it (still a
+               // successfully loaded, drawable body - just not animatable).
 } CFLBodyModel;
+
+// One bone's real LOCAL (parent-relative) pose - the same shape real IQM
+// itself stores per joint per frame.
+typedef struct {
+    float translate[3];
+    float rotate[4]; // quaternion x,y,z,w
+    float scale[3];
+} CFLBoneLocalPose;
 
 bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFLBodyModel* outBody);
 void CFL_DeleteBodyModel(CFLBodyModel* body);
 void CFL_AttachBody(CFLCharModel* model, const CFLBodyModel* body);
+
+u32 CFL_GetBodyBoneCount(const CFLBodyModel* body);
+const char* CFL_GetBodyBoneName(const CFLBodyModel* body, u32 boneIndex);
+bool CFL_GetBodyBoneBindLocalPose(const CFLBodyModel* body, u32 boneIndex, CFLBoneLocalPose* outPose);
+bool CFL_PoseBodyModel(CFLBodyModel* body, const CFLBoneLocalPose* poses, u32 boneCount);
 
 #define CFL_HEAD_TO_BODY_SCALE (10.0f / 7.0f)
 ```
@@ -322,6 +347,36 @@ baked into `CFL_InitCharModel` itself.
   drawing a body in your own real-time scene (see the example below);
   `CFL_CommandMakeModelIcon`'s own internal drawing does **not** use
   it (see the note in [Icon rendering](#icon-rendering) below for why).
+- **`CFL_GetBodyBoneCount(body)`** / **`CFL_GetBodyBoneName(body, i)`** -
+  how many real bones `body` has, and each one's real name (from the
+  original `.iqm`'s own text section). This is the authoritative bone
+  ORDER `CFL_PoseBodyModel`'s own `poses` array must use - don't assume
+  it matches the source file's own joint array order without checking,
+  even though in practice it always will (this library never reorders
+  or filters joints). Returns `0`/`NULL` if `body` wasn't loaded
+  successfully or has no retained rig data (see `CFLBodyModel.rig`
+  above). Names are stable pointers into the *original* `bodyData`
+  buffer `CFL_LoadBodyModel` was given - valid for as long as that
+  buffer is (true for a real embedded, permanently-resident asset, the
+  normal case on 3DS).
+- **`CFL_GetBodyBoneBindLocalPose(body, i, &outPose)`** - hands back
+  bone `i`'s own real REST (bind) local pose. Useful when your own
+  loaded animation doesn't cover every bone `body` has - fill in the
+  gaps with this instead of leaving a bone at an all-zero pose (which
+  would collapse it onto its parent). Returns `false` (leaving
+  `*outPose` untouched) if `body`/`i` is invalid.
+- **`CFL_PoseBodyModel(body, poses, boneCount)`** - re-poses and
+  re-skins `body` from an app-supplied per-bone LOCAL pose array
+  (`boneCount` must equal `CFL_GetBodyBoneCount(body)`), or resets back
+  to the file's own real bind pose if `poses`/`boneCount` is
+  `NULL`/`0`. Safe to call every frame - see
+  [Animation playback](#animation-playback) below for the full
+  derivation and an [example](#animating-a-body-model). Genuinely does
+  real per-vertex CPU work each call (re-skins every vertex of every
+  part and re-uploads each part's `vbo`/`ibo`) - cheap for this
+  library's own small body assets (~360 vertices across 2 parts), but
+  not free, and not yet measured against a real frame budget on real
+  hardware.
 
 #### The IQM format, in detail
 
@@ -358,10 +413,15 @@ load.
   parts use `u8` indices) - a bigger single mesh needs splitting into
   more than one mesh at export time.
 - **Poses/anims/frames** - read and bounds-validated if present (so a
-  malformed animation section is still caught, not silently ignored),
-  but **not yet consumed** - see
-  [Adding animation playback](#adding-animation-playback-not-yet-implemented)
-  below.
+  malformed animation section in a *body* `.iqm` is still caught, not
+  silently ignored), but this library still has no code that samples
+  these sections itself - `CFL_LoadBodyModel` only ever loads a body's
+  bind pose. Real animation *data* (a separate `.iqm` file containing
+  these same sections but no mesh at all) is entirely your own
+  application's job to read and sample - see
+  [Animation playback](#animation-playback) below for what this
+  library gives you to actually *apply* a sampled pose once you have
+  one.
 
 **Mesh material identity - read the name, never the mesh's array
 position.** Each mesh's own real, standard `material` text field must
@@ -411,77 +471,82 @@ programmatically instead (e.g. from another 3D format, or procedurally),
 remember: joints must be written parent-before-child, `BLENDWEIGHTS`
 must sum to 255 per vertex, and quaternions are XYZW.
 
-#### Adding animation playback (not yet implemented)
+#### Animation playback
 
-This library currently loads a body's bind pose once, at
-`CFL_LoadBodyModel` time, computes final world-space vertex positions
-right then (real joint-hierarchy composition + real weighted
-skinning, both described above), and bakes the result into a plain,
-static `vbo`/`ibo` - there is no time-varying state anywhere in a
-loaded `CFLBodyModel`. `cfliqmParse` already reads and bounds-validates
-a file's own `iqmpose`/`iqmanim`/frame sections if present (so a
-malformed animation section is caught even today), but nothing
-currently *samples* them - the actual "advance to time T and produce a
-pose" step doesn't exist yet. This was a deliberate choice: real IQM is
-the format that makes animation possible, but wiring up playback is a
-separate, later feature.
+`CFL_LoadBodyModel` still only ever loads a body's real bind pose - it
+composes final world-space vertex positions once, at load time, and
+bakes the result into `vbo`/`ibo`. What changed is `CFL_PoseBodyModel`
+(above): call it with a per-bone pose and it re-derives a full,
+correctly-Mii-scaled skinned mesh from that pose instead, safe to call
+every frame. This library still has **no code anywhere that reads an
+`.iqm` animation's own `iqmpose`/`iqmanim`/frame sections** - sampling
+real animation data and deciding when/how fast to play it is entirely
+your own application's job, matching how this library has always kept
+drawing/timing decisions out of its own scope (see
+[Design](#design) above). `CFL_PoseBodyModel` is the one thing this
+library needed to add to make that possible at all: before it existed,
+`CFL_LoadBodyModel` threw away the real skeleton and per-vertex bone
+weights right after the one bind-pose bake, so there was nothing left
+for an app-side player to re-pose even in principle.
 
-If you want to add it, here's what's already in place to build on, and
-what isn't:
+**What `CFL_PoseBodyModel` actually does, given a pose:**
 
-- **Already real and reusable**: the joint-hierarchy composition this
-  library does once at load time (quaternion → 3×3 rotation matrix,
-  then walking the joint array parent-before-child, composing each
-  joint's LOCAL transform against its already-computed parent) is
-  exactly the same math a per-frame pose evaluation needs - it just
-  needs to run with a *different* set of joint transforms (this
-  frame's sampled pose) instead of the bind pose, every frame instead
-  of once.
-- **Already real and reusable**: the weighted linear-blend skinning
-  formula (up to 4 bone influences per vertex, normalized) is likewise
-  exactly what a per-frame vertex update needs - it's just currently
-  invoked once, at load time, writing into a static buffer, instead of
-  every frame, writing into a buffer the GPU reads fresh each draw.
-- **Not yet implemented - sampling a pose from `iqmanim`/`iqmpose`/frame
-  data.** Real IQM's own encoding: an `iqmanim` names a contiguous
-  range of frames (with a framerate) inside the file's own global
-  frame list; each `iqmpose` describes one joint's own 10 channels (3
-  translate + 4 rotate + 3 scale) via a `channeloffset`/`channelscale`
-  pair per channel plus a bitmask of which channels actually vary
-  frame-to-frame (a channel that's constant for the whole animation
-  isn't stored per-frame at all); each frame itself is a flat array of
-  packed `u16` values, one per *animated* channel across every joint,
-  in order - decoding one frame means walking each joint's own pose
-  channel mask and either reading+dequantizing the next `u16`
-  (`channeloffset + rawValue * channelscale`) or just using
-  `channeloffset` directly for a channel that mask says is constant.
-- **Not yet implemented - a choice of where the per-frame skinning
-  actually runs.** Two real options, with different tradeoffs:
-    - **CPU (software) skinning** - the more direct extension: keep
-      today's plain static-buffer approach, but re-run the *same*
-      hierarchy-composition + weighted-blend formulas every frame (or
-      every few frames) with a freshly-sampled pose, and re-upload the
-      result into the existing `vbo`. Simplest to build on top of what
-      exists today; costs real CPU time per animated body per frame,
-      proportional to vertex count.
-    - **GPU skinning** - faster for several simultaneous animated
-      bodies, but a bigger architecture change: the vertex format
-      would need to carry raw bind-pose-relative positions plus
-      `blendindexes`/`blendweights` directly (instead of this
-      library's own current pre-baked world positions), an array of
-      per-joint bone matrices would need to be uploaded as a uniform
-      each frame, and the vertex shader itself would need to do the
-      weighted blend instead of the CPU. A real, standard technique
-      (the same one most modern skinned-mesh renderers use), just not
-      what this library's current single, simple vertex shader does
-      today.
+1. Composes the given per-bone `CFLBoneLocalPose` array into WORLD
+   transforms via a real parent-chain FK solve (quaternion → 3×3
+   rotation matrix, then walking bones parent-before-child, composing
+   each one's local transform against its already-computed parent) -
+   the exact same composition `CFL_LoadBodyModel` itself already used
+   for the bind pose, just handed a different (and, unlike the bind
+   pose, generally non-identity-rotation) pose this time.
+2. Re-applies this SAME body's own real per-Mii build/height bone-scale
+   category stretch on top of that ANIMATED pose - the identical
+   pipeline `CFL_LoadBodyModel` used for the bind pose (see
+   [Bone-scale category](#the-iqm-format-in-detail) above), just
+   driven by the animated world positions instead of the file's static
+   ones. This is the part that actually matters for correctness: a
+   tall/short or wide/narrow Mii's own real proportions carry through
+   into the animated pose exactly as they already do for the static
+   one, rather than an animation just being blended on top of an
+   already-scaled bind pose (which would *not* respect per-Mii scale
+   correctly).
+3. Re-skins every vertex of every part (the same real weighted
+   linear-blend formula across up to 4 bone influences described
+   above, now genuinely applying each bone's own rotation too - the
+   original bind-pose-only formula could skip rotation entirely, since
+   a bind pose's real rotation is always identity) and re-uploads each
+   part's `vbo`/`ibo`. Also updates `headBoneWorldMatrix` from the
+   real animated+scaled head bone.
 
-Either path can reuse the *shape* of `cflComposeJointWorld`'s own real
-parent-chain composition and the weighted-blend math already sitting
-in `cflBuildBodyPart` - the missing piece is purely the animation-
-*sampling* step (turning `iqmanim`/`iqmpose`/frame bytes into "this
-joint's LOCAL transform, right now") and deciding where the result
-gets applied.
+`poses`/`boneCount` = `NULL`/`0` resets back to the real bind pose
+(far cheaper than a fresh `CFL_LoadBodyModel` call). A bone your own
+loaded animation doesn't cover should be filled with
+`CFL_GetBodyBoneBindLocalPose` rather than left zeroed - see the
+example below.
+
+**Sampling a pose from `iqmanim`/`iqmpose`/frame data yourself.** Real
+IQM's own encoding: an `iqmanim` names a contiguous range of frames
+(with a framerate) inside the file's own global frame list; each
+`iqmpose` describes one joint's own 10 channels (3 translate + 4
+rotate + 3 scale) via a `channeloffset`/`channelscale` pair per
+channel plus a bitmask of which channels actually vary frame-to-frame
+(a channel that's constant for the whole animation isn't stored
+per-frame at all); each frame itself is a flat array of packed `u16`
+values, one per *animated* channel across every joint, in order -
+decoding one frame means walking each joint's own pose channel mask
+and either reading+dequantizing the next `u16`
+(`channeloffset + rawValue * channelscale`) or just using
+`channeloffset` directly for a channel the mask says is constant. See
+[Animating a body model](#animating-a-body-model) below for a real,
+complete reader.
+
+**Matching an animation's own joints to a body's own bones, by name.**
+A real anim-only `.iqm` (no mesh at all - just joints/poses/anims/
+frames, the shape you get from a tool that exports "just the
+animation") isn't guaranteed to store its joints in the same array
+order as the body file it was authored against, even when both
+describe the same real skeleton - match by `CFL_GetBodyBoneName`
+against the animation's own joint names instead of assuming array
+order lines up.
 
 ### Icon rendering
 
@@ -655,6 +720,12 @@ crashing on - check these rather than assuming success:
 - **`CFLCharModel` must be zero-initialized before its first use** -
   static/global storage already gets this for free from C; a stack
   variable needs `= {0}` explicitly.
+- **`CFL_PoseBodyModel` fails (leaving `body` unchanged) if `body` has
+  no retained rig data, or `boneCount` doesn't match
+  `CFL_GetBodyBoneCount(body)`** - check `CFL_GetBodyBoneCount(body) >
+  0` once after `CFL_LoadBodyModel` before ever building a `poses`
+  array sized for it, and always pass the CURRENT `CFL_GetBodyBoneCount`
+  result as `boneCount`, not a value cached from an earlier body.
 
 ## Examples
 
@@ -1122,6 +1193,208 @@ int main(void)
 	C3D_Fini();
 	gfxExit();
 	return 0;
+}
+```
+
+### Animating a body model
+
+This library has no code that reads an animation `.iqm`'s own
+`iqmpose`/`iqmanim`/frame sections itself (see
+[Animation playback](#animation-playback) above) - that part is
+genuinely your own application's job. This example is a real,
+self-contained reader for exactly the shape a real *anim-only* `.iqm`
+has (joints/poses/anims/frames, no mesh at all - the kind of file you
+get from a tool whose job is "export just the animation"), plus the
+bone-name matching and per-frame sampling that feeds `CFL_PoseBodyModel`.
+Builds on the previous example - assumes `body`/`model`/`drawModelWithBody`
+already exist, and a separate `walk_iqm`/`walk_iqm_size` (a real
+anim-only export) is embedded the same way `body_iqm` was:
+
+```c
+#include <3ds.h>
+#include <string.h>
+#include <math.h>
+#include "cfl_mii.h"
+#include "walk_iqm.h" // extern const u8 walk_iqm[]; extern const u32 walk_iqm_size;
+
+#define ANIM_MAX_JOINTS 18 // matches CFL_BODY_MAX_BONES
+
+typedef struct {
+    u32 jointCount;
+    char jointNames[ANIM_MAX_JOINTS][32];
+    u32 frameCount;
+    float framerate;
+    CFLBoneLocalPose* framePoses; // malloc'd: frameCount*jointCount, [frame*jointCount+joint]
+} BodyAnimClip;
+
+// Real IQM struct layouts this reader needs - deliberately independent of
+// anything cfl_mii.h exposes (a real anim-only file has no mesh data at
+// all, a simpler shape than what CFL_LoadBodyModel is built to read).
+typedef struct {
+    char magic[16]; u32 version, filesize, flags;
+    u32 num_text, ofs_text;
+    u32 num_meshes, ofs_meshes;
+    u32 num_vertexarrays, num_vertexes, ofs_vertexarrays;
+    u32 num_triangles, ofs_triangles, ofs_adjacency;
+    u32 num_joints, ofs_joints;
+    u32 num_poses, ofs_poses;
+    u32 num_anims, ofs_anims;
+    u32 num_frames, num_framechannels, ofs_frames, ofs_bounds;
+    u32 num_comment, ofs_comment;
+    u32 num_extensions, ofs_extensions;
+} IqmHeader;
+typedef struct { u32 name; s32 parent; float translate[3], rotate[4], scale[3]; } IqmJoint;
+typedef struct { s32 parent; u32 mask; float channeloffset[10], channelscale[10]; } IqmPose;
+typedef struct { u32 name, first_frame, num_frames; float framerate; u32 flags; } IqmAnim;
+
+static void quatNormalize(float q[4]) {
+    float len = sqrtf(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+    if (len > 1e-8f) { q[0]/=len; q[1]/=len; q[2]/=len; q[3]/=len; }
+    else { q[0]=0; q[1]=0; q[2]=0; q[3]=1; }
+}
+
+// Bounds-checks every section it reads, including a real per-read cursor
+// check while decoding the flat frame-channel stream (not just an
+// up-front total-size check) - a malformed file fails loudly, not
+// silently. Decodes the whole clip into a dense [frame][joint] array once.
+static bool loadAnimClip(const u8* data, u32 size, BodyAnimClip* out) {
+    memset(out, 0, sizeof(*out));
+    if (size < sizeof(IqmHeader)) return false;
+    IqmHeader hdr; memcpy(&hdr, data, sizeof(hdr));
+    if (memcmp(hdr.magic, "INTERQUAKEMODEL\0", 16) != 0) return false;
+    if (hdr.version != 2 || hdr.filesize > size) return false;
+
+    #define FITS(ofs, count, itemSize) ((u64)(ofs) + (u64)(count) * (u64)(itemSize) <= size)
+
+    const char* text = NULL;
+    if (hdr.num_text) {
+        if (!FITS(hdr.ofs_text, hdr.num_text, 1)) return false;
+        text = (const char*)(data + hdr.ofs_text);
+    }
+    if (hdr.num_joints == 0 || hdr.num_joints > ANIM_MAX_JOINTS) return false;
+    if (!FITS(hdr.ofs_joints, hdr.num_joints, sizeof(IqmJoint))) return false;
+    out->jointCount = hdr.num_joints;
+    for (u32 i = 0; i < hdr.num_joints; i++) {
+        IqmJoint j; memcpy(&j, data + hdr.ofs_joints + (size_t)i * sizeof(j), sizeof(j));
+        const char* name = (text && j.name < hdr.num_text) ? (text + j.name) : "";
+        strncpy(out->jointNames[i], name, sizeof(out->jointNames[i]) - 1);
+    }
+
+    if (hdr.num_poses != hdr.num_joints || hdr.num_frames == 0) return false;
+    if (!FITS(hdr.ofs_poses, hdr.num_poses, sizeof(IqmPose))) return false;
+    IqmPose poses[ANIM_MAX_JOINTS];
+    memcpy(poses, data + hdr.ofs_poses, (size_t)hdr.num_poses * sizeof(IqmPose));
+    if (!FITS(hdr.ofs_frames, (u64)hdr.num_frames * hdr.num_framechannels, sizeof(u16))) return false;
+
+    out->frameCount = hdr.num_frames;
+    out->framerate = 30.0f;
+    if (hdr.num_anims > 0 && FITS(hdr.ofs_anims, 1, sizeof(IqmAnim))) {
+        IqmAnim a; memcpy(&a, data + hdr.ofs_anims, sizeof(a));
+        if (a.framerate > 0.0f) out->framerate = a.framerate;
+    }
+
+    out->framePoses = malloc(sizeof(CFLBoneLocalPose) * (size_t)out->frameCount * out->jointCount);
+    if (!out->framePoses) { memset(out, 0, sizeof(*out)); return false; }
+
+    const u16* cursor = (const u16*)(data + hdr.ofs_frames);
+    const u16* cursorEnd = cursor + (size_t)hdr.num_frames * hdr.num_framechannels;
+    for (u32 f = 0; f < hdr.num_frames; f++) {
+        for (u32 j = 0; j < hdr.num_joints; j++) {
+            const IqmPose* pose = &poses[j];
+            float vals[10];
+            for (int c = 0; c < 10; c++) {
+                if (pose->mask & (1u << c)) {
+                    if (cursor >= cursorEnd) { free(out->framePoses); memset(out, 0, sizeof(*out)); return false; }
+                    vals[c] = pose->channeloffset[c] + (*cursor) * pose->channelscale[c];
+                    cursor++;
+                } else vals[c] = pose->channeloffset[c];
+            }
+            CFLBoneLocalPose* p = &out->framePoses[f * out->jointCount + j];
+            p->translate[0]=vals[0]; p->translate[1]=vals[1]; p->translate[2]=vals[2];
+            p->rotate[0]=vals[3]; p->rotate[1]=vals[4]; p->rotate[2]=vals[5]; p->rotate[3]=vals[6];
+            quatNormalize(p->rotate);
+            p->scale[0]=vals[7]; p->scale[1]=vals[8]; p->scale[2]=vals[9];
+        }
+    }
+    #undef FITS
+    return true;
+}
+
+// Samples `clip` at a (possibly fractional) frame, looping, into
+// `outPoses` (indexed by the CLIP's own joint order) - linear for
+// translate/scale, nlerp (normalized lerp with the standard shortest-arc
+// sign fix) for rotation, a cheap and visually-indistinguishable-from-slerp
+// approximation for adjacent source frames.
+static void sampleAnimClip(const BodyAnimClip* clip, float frame, CFLBoneLocalPose* outPoses) {
+    if (clip->frameCount == 0) return;
+    float wrapped = fmodf(frame, (float)clip->frameCount);
+    if (wrapped < 0.0f) wrapped += (float)clip->frameCount;
+    u32 f0 = (u32)wrapped, f1 = (f0 + 1) % clip->frameCount;
+    float t = wrapped - (float)f0;
+    for (u32 j = 0; j < clip->jointCount; j++) {
+        const CFLBoneLocalPose* a = &clip->framePoses[(size_t)f0 * clip->jointCount + j];
+        const CFLBoneLocalPose* b = &clip->framePoses[(size_t)f1 * clip->jointCount + j];
+        CFLBoneLocalPose* out = &outPoses[j];
+        for (int c = 0; c < 3; c++) out->translate[c] = a->translate[c] + (b->translate[c]-a->translate[c])*t;
+        for (int c = 0; c < 3; c++) out->scale[c] = a->scale[c] + (b->scale[c]-a->scale[c])*t;
+        float dot = a->rotate[0]*b->rotate[0]+a->rotate[1]*b->rotate[1]+a->rotate[2]*b->rotate[2]+a->rotate[3]*b->rotate[3];
+        float bs = dot < 0.0f ? -1.0f : 1.0f;
+        for (int c = 0; c < 4; c++) out->rotate[c] = a->rotate[c] + (bs*b->rotate[c]-a->rotate[c])*t;
+        quatNormalize(out->rotate);
+    }
+}
+
+int main(void) {
+    // ... gfxInitDefault/C3D_Init/CFL_Initialize/CFL_InitCharModel/
+    // CFL_LoadBodyModel exactly as the previous example ...
+
+    BodyAnimClip clip;
+    bool hasClip = loadAnimClip(walk_iqm, walk_iqm_size, &clip);
+
+    // Match the clip's own joints to THIS body's own real bones, by NAME
+    // (not array order - see Animation playback above) - once, not per
+    // frame. Any bone the clip doesn't cover falls back to its own real
+    // bind pose, so an incomplete animation still poses every OTHER bone
+    // correctly instead of collapsing it to its parent's position.
+    s32 boneToJoint[ANIM_MAX_JOINTS];
+    CFLBoneLocalPose bindFallback[ANIM_MAX_JOINTS];
+    u32 boneCount = hasBody ? CFL_GetBodyBoneCount(&body) : 0;
+    if (hasClip && hasBody) {
+        for (u32 i = 0; i < boneCount; i++) {
+            const char* boneName = CFL_GetBodyBoneName(&body, i);
+            boneToJoint[i] = -1;
+            for (u32 j = 0; boneName && j < clip.jointCount; j++) {
+                if (strcmp(boneName, clip.jointNames[j]) == 0) { boneToJoint[i] = (s32)j; break; }
+            }
+            CFL_GetBodyBoneBindLocalPose(&body, i, &bindFallback[i]);
+        }
+    }
+
+    float animFrame = 0.0f;
+    bool playing = hasClip && hasBody;
+
+    while (aptMainLoop()) {
+        hidScanInput();
+        if (hidKeysDown() & KEY_START) break;
+        if (hidKeysDown() & KEY_A) playing = !playing;
+
+        if (playing) {
+            animFrame += clip.framerate / 60.0f; // fixed-step, assumes ~60fps display refresh
+            CFLBoneLocalPose sampledByJoint[ANIM_MAX_JOINTS];
+            sampleAnimClip(&clip, animFrame, sampledByJoint);
+            CFLBoneLocalPose poseByBone[ANIM_MAX_JOINTS];
+            for (u32 i = 0; i < boneCount; i++)
+                poseByBone[i] = (boneToJoint[i] >= 0) ? sampledByJoint[boneToJoint[i]] : bindFallback[i];
+            CFL_PoseBodyModel(&body, poseByBone, boneCount);
+        }
+
+        // ... C3D_FrameBegin/drawModelWithBody/C3D_FrameEnd exactly as the
+        // previous example ...
+    }
+
+    free(clip.framePoses);
+    // ... CFL_DeleteBodyModel/CFL_DeleteModel/CFL_Finalize/gfxExit as before ...
+    return 0;
 }
 ```
 
