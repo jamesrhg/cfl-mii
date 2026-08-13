@@ -8,6 +8,7 @@
 
 #include "cfl_mii.h"
 #include "vshader_shbin.h"
+#include "MaleBody_bin.h"
 
 static FILE* s_debugLog = NULL;
 
@@ -21,6 +22,11 @@ void CFL_EnableSDDebug(bool enable)
 	}
 }
 
+void CFL_FlushSDDebug(void)
+{
+	if (s_debugLog) fflush(s_debugLog);
+}
+
 void dbglog(const char* fmt, ...)
 {
 	if (!s_debugLog) return;
@@ -28,6 +34,7 @@ void dbglog(const char* fmt, ...)
 	va_start(ap, fmt);
 	vfprintf(s_debugLog, fmt, ap);
 	va_end(ap);
+	fflush(s_debugLog);
 }
 
 void dbglogErr(const char* fmt, ...)
@@ -37,6 +44,7 @@ void dbglogErr(const char* fmt, ...)
 		va_start(ap, fmt);
 		vfprintf(s_debugLog, fmt, ap);
 		va_end(ap);
+		fflush(s_debugLog);
 	}
 	va_start(ap, fmt);
 	vprintf(fmt, ap);
@@ -51,7 +59,6 @@ void dbglogVramStats(const char* context, bool onScreen)
 	else
 		dbglog("%s: VRAM free = %lu bytes (%.1f KB)\n", context, (unsigned long)free, free / 1024.0f);
 }
-
 
 #define CFL_SECTION_GOATEE      0
 #define CFL_SECTION_CAP         1
@@ -81,6 +88,7 @@ typedef struct {
 	u32 vertexCount;
 
 	u8* indices;
+
 	u32 indexCount;
 } CFLModel;
 
@@ -267,7 +275,7 @@ static bool parseGeometry(const u8* geom, u32 remaining, CFLModel* out)
 	const u8* p = geom + 8;
 	const u8* end = geom + remaining;
 
-	u32 perVertexBytes = 6   + (N == C ? 6 : 0) + (T == C ? 4 : 0);
+	u32 perVertexBytes = 6  + (N == C ? 6 : 0) + (T == C ? 4 : 0);
 	if (p + (u64)perVertexBytes * C > end) return false;
 
 	float* positions = malloc(sizeof(float) * 3 * C);
@@ -394,6 +402,7 @@ static bool loadResModel(const u8* data, u32 size, u32 sectionIndex, u32 itemInd
 
 	u32 prefix = itemPrefixSize(sectionIndex);
 	if (itemRemaining > prefix && parseGeometry(item + prefix, itemRemaining - prefix, out)) {
+
 		if (sectionIndex == CFL_SECTION_MASK && out->texcoords && out->vertexCount > 0) {
 			float uMin = out->texcoords[0], uMax = out->texcoords[0];
 			float vMin = out->texcoords[1], vMax = out->texcoords[1];
@@ -481,7 +490,6 @@ static bool loadResTexture(const u8* data, u32 size, u32 sectionIndex, u32 itemI
 typedef struct { float position[3]; float normal[3]; float texcoord[2]; } Vertex;
 
 typedef CFLPart Part;
-
 
 static const float skinColors[6][3] = {
 	{ 1.000f, 0.827f, 0.678f },
@@ -597,25 +605,27 @@ static const u8 eyebrowRotOffset[28] = {
 
 typedef struct { u8 eyeR, eyeL, mouth; s8 eyeRotDelta, eyebrowRotDelta, eyebrowYDelta; } CFLExpressionTypes;
 static const CFLExpressionTypes kExpressionTypes[CFL_EXPRESSION_COUNT] = {
-	  { 0, 0, 0,  0,  0,  0 },
-	  { 1, 1, 0,  0,  0,  0 },
-	  { 0, 0, 1,  2,  2,  0 },
-	  { 2, 2, 2, -2, -2,  0 },
-	  { 3, 3, 0,  0,  0, -2 },
-	  { 4, 4, 0,  0,  0,  0 },
-	  { 0, 0, 3,  0,  0,  0 },
-	  { 1, 1, 3,  0,  0,  0 },
-	  { 0, 0, 3,  2,  2,  0 },
-	  { 2, 2, 3, -2, -2,  0 },
-	  { 3, 3, 3,  0,  0, -2 },
-	  { 4, 4, 3,  0,  0,  0 },
-	  { 5, 0, 0,  0,  0,  0 },
-	  { 0, 5, 0,  0,  0,  0 },
-	  { 5, 0, 3,  0,  0,  0 },
-	  { 0, 5, 3,  0,  0,  0 },
-	  { 5, 0, 5,  0,  0,  0 },
-	  { 0, 5, 5,  0,  0,  0 },
-	  { 5, 5, 2,  0,  0,  0 },
+	 { 0, 0, 0,  0,  0,  0 },
+	 { 1, 1, 0,  0,  0,  0 },
+	 { 0, 0, 1,  2,  2,  0 },
+	 { 2, 2, 2, -2, -2,  0 },
+	 { 3, 3, 0,  0,  0, -2 },
+	 { 4, 4, 0,  0,  0,  0 },
+	 { 0, 0, 3,  0,  0,  0 },
+	 { 1, 1, 3,  0,  0,  0 },
+	 { 0, 0, 3,  2,  2,  0 },
+	 { 2, 2, 3, -2, -2,  0 },
+	 { 3, 3, 3,  0,  0, -2 },
+	 { 4, 4, 3,  0,  0,  0 },
+
+	 { 5, 0, 0,  0,  0,  0 },
+	 { 0, 5, 0,  0,  0,  0 },
+	 { 5, 0, 3,  0,  0,  0 },
+	 { 0, 5, 3,  0,  0,  0 },
+	 { 5, 0, 5,  0,  0,  0 },
+	 { 0, 5, 5,  0,  0,  0 },
+
+	 { 5, 5, 2,  0,  0,  0 },
 };
 
 static u32 eyeIndexForType(const MiiData* mii, u8 type)
@@ -723,6 +733,7 @@ static void addPart(CFLCharModel* cm, const CFLModel* model, const float transla
 	part->isAlphaOnly = false;
 	part->depthWrite = true;
 	part->noSpecular = noSpecular;
+
 	part->capBlend = false;
 
 	if (model->indices && model->indexCount >= 3) {
@@ -807,6 +818,7 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 	part->vbo = buildVertices(&model, translate, partScale, flipX, &count);
 	part->vertexCount = count;
 	bool needsTint = tex.format < CFL_TEXFMT_RG8;
+
 	float capHalvedTint[3];
 	const float* effectiveTint = tint;
 	if (capBlend && needsTint) {
@@ -844,6 +856,7 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 		return;
 	}
 	C3D_TexUpload(&part->tex, tex.data);
+
 	C3D_TexFlush(&part->tex);
 	C3D_TexSetFilter(&part->tex, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(&part->tex, cflToGpuWrap[tex.uWrap < 3 ? tex.uWrap : 0], cflToGpuWrap[tex.vWrap < 3 ? tex.vWrap : 0]);
@@ -897,7 +910,6 @@ static int addTexturedPart(CFLCharModel* cm, const CFLModel* model, const float 
 	return idx;
 }
 
-
 typedef enum { MASK_ORIGIN_CENTER, MASK_ORIGIN_LEFT, MASK_ORIGIN_RIGHT } MaskOrigin;
 typedef struct { float pos[2]; float scale[2]; float rot; MaskOrigin origin; } MaskPartsDesc;
 
@@ -936,6 +948,7 @@ static void buildMaskQuad(const MaskPartsDesc* d, Vertex outVerts[4], bool flipV
 
 static void uploadMaterialColor(const float color[3])
 {
+
 	C3D_Material mtl;
 	mtl.ambient[0] = color[2]; mtl.ambient[1] = color[1]; mtl.ambient[2] = color[0];
 	mtl.diffuse[0] = mtl.diffuse[1] = mtl.diffuse[2] = 0.0f;
@@ -1006,6 +1019,7 @@ static void drawDecalVerts(const Vertex verts[4], const CFLTexture* tex, const f
 		return;
 	}
 	C3D_TexUpload(&gpuTex, tex->data);
+
 	C3D_TexFlush(&gpuTex);
 	C3D_TexSetFilter(&gpuTex, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(&gpuTex, cflToGpuWrap[tex->uWrap < 3 ? tex->uWrap : 0], cflToGpuWrap[tex->vWrap < 3 ? tex->vWrap : 0]);
@@ -1018,6 +1032,7 @@ static void drawDecalVerts(const Vertex verts[4], const CFLTexture* tex, const f
 	C3D_TexEnv* env = C3D_GetTexEnv(0);
 	C3D_TexEnvInit(env);
 	bool isAlphaOnly = (tex->format == CFL_TEXFMT_A4 || tex->format == CFL_TEXFMT_A8);
+
 	if (isAlphaOnly) {
 		C3D_TexEnvSrc(env, C3D_RGB, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
 		C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
@@ -1089,9 +1104,11 @@ static void drawDualColorDecal(const MaskPartsDesc* d, const CFLTexture* tex, co
 		return;
 	}
 	C3D_TexUpload(&gpuTex, tex->data);
+
 	C3D_TexFlush(&gpuTex);
 	C3D_TexSetFilter(&gpuTex, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(&gpuTex, cflToGpuWrap[tex->uWrap < 3 ? tex->uWrap : 0], cflToGpuWrap[tex->vWrap < 3 ? tex->vWrap : 0]);
+
 	C3D_TexBind(0, &gpuTex);
 
 	C3D_BufInfo* bufInfo = C3D_GetBufInfo();
@@ -1258,6 +1275,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		dbglog("(C3D_TexInitVRAM failed for face mask, skipping)\n");
 		return false;
 	}
+
 	C3D_RenderTarget* maskTarget = C3D_RenderTargetCreateFromTex(&maskTex, GPU_TEXFACE_2D, 0, -1);
 	if (!maskTarget) {
 		dbglog("(C3D_RenderTargetCreateFromTex failed for face mask, skipping)\n");
@@ -1269,11 +1287,13 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 	Mtx_Identity(&identity);
 
 	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
 		C3D_FrameDrawOn(maskTarget);
 		C3D_SetViewport(0, 0, canvasSize, canvasSize);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, &identity);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  &identity);
+
 		C3D_LightEnvBind(&s_bakeLightEnv);
 		C3D_CullFace(GPU_CULL_NONE);
 		C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_ALL);
@@ -1283,9 +1303,9 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		CFLTexture tex;
 		MaskPartsDesc d;
 
-
 		if (mii->mole_details.enable) {
 			d = (MaskPartsDesc){ { molePosX, molePosY }, { moleScale, moleScale }, 0.0f, MASK_ORIGIN_CENTER };
+
 			C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ONE_MINUS_SRC_ALPHA);
 			if (loadResTexture(cflData, cflSize, CFL_SECTION_MOLE, 1, &tex))
 				drawMaskDecal(&d, &tex, moleColor);
@@ -1293,6 +1313,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 		}
 
 		const float* eyeColor0 = getEyeColor0(mii->eye_details.style);
+
 		bool flipVR = (types->eyeR == 4 || types->eyeR == 5);
 		bool flipVL = (types->eyeL == 4 || types->eyeL == 5);
 		d = (MaskPartsDesc){ { 32.0f - eyeSpacingX, eyePosY }, { eyeScaleX, eyeScaleYR }, eyeRotateR, MASK_ORIGIN_RIGHT };
@@ -1324,6 +1345,7 @@ static bool bakeMaskTexture(const u8* cflData, u32 cflSize, const MiiData* mii, 
 			if (loadResTexture(cflData, cflSize, CFL_SECTION_MUSTACHE, mii->mustache_details.mustache_style, &tex))
 				drawMaskDecal(&d, &tex, hairColors[beardColorIndex]);
 		}
+
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
 	C3D_FrameEnd(0);
 	flushDecalCleanup();
@@ -1355,6 +1377,7 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 		dbglog("(C3D_TexInitVRAM failed for faceline texture, skipping)\n");
 		return false;
 	}
+
 	C3D_RenderTarget* faceTarget = C3D_RenderTargetCreateFromTex(&faceTex, GPU_TEXFACE_2D, 0, -1);
 	if (!faceTarget) {
 		dbglog("(C3D_RenderTargetCreateFromTex failed for faceline texture, skipping)\n");
@@ -1371,12 +1394,14 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 		((u32)(skinColors[skinIndex][2] * 255.0f) << 8) | 0xFF;
 
 	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
 		C3D_RenderTargetClear(faceTarget, C3D_CLEAR_ALL, clearColor, 0);
 		C3D_FrameDrawOn(faceTarget);
 		C3D_SetViewport(0, 0, FACE_TEX_WIDTH, FACE_TEX_HEIGHT);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, &identity);
 		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  &identity);
+
 		C3D_LightEnvBind(&s_bakeLightEnv);
 		C3D_CullFace(GPU_CULL_NONE);
 		C3D_DepthTest(false, GPU_ALWAYS, GPU_WRITE_ALL);
@@ -1413,7 +1438,6 @@ static bool buildFaceTexture(CFLCharModel* cm, const u8* cflData, u32 cflSize, c
 	return true;
 }
 
-
 static const u8* g_cflData;
 static u32 g_cflSize;
 
@@ -1443,6 +1467,7 @@ bool CFL_MakeStoreData(const MiiData* mii, CFLStoreData* out)
 	crcBytes[0] = 0;
 	crcBytes[1] = 0;
 	u16 crc = cflComputeCRC16(0, (const u8*)out, sizeof(CFLStoreData));
+
 	crcBytes[0] = (u8)(crc >> 8);
 	crcBytes[1] = (u8)(crc & 0xFF);
 	return true;
@@ -1726,6 +1751,7 @@ static bool CFLi_AddRecentDBData(const MiiData* mii)
 
 	bool isNewEntry = false;
 	if (targetSlot < 0) {
+
 		if (count < CFL_RECENT_SLOT_COUNT) {
 			for (int slot = 0; slot < CFL_RECENT_SLOT_COUNT; slot++) {
 				const u8* record = records + (u32)slot * CFL_RECENT_RECORD_SIZE;
@@ -1733,6 +1759,7 @@ static bool CFLi_AddRecentDBData(const MiiData* mii)
 			}
 		}
 		if (targetSlot < 0) {
+
 			if (count == 0) {
 				dbglogErr("CFLi_AddRecentDBData: recent-DB count is 0 but no empty slot was found - refusing to write\n");
 				FSFILE_Close(file);
@@ -1782,6 +1809,284 @@ int CFL_GetWorkSize(bool hdModeEnabled)
 	return size + 0x400e0;
 }
 
+static const float pantsColors[4][3] = {
+	{ 0x40 / 255.0f, 0x47 / 255.0f, 0x4E / 255.0f },
+	{ 0x28 / 255.0f, 0x40 / 255.0f, 0x7A / 255.0f },
+	{ 0x70 / 255.0f, 0x20 / 255.0f, 0x15 / 255.0f },
+	{ 0xC0 / 255.0f, 0xA0 / 255.0f, 0x30 / 255.0f },
+};
+
+static void cflGetBodyScale(u8 build, u8 height, float outScale[3])
+{
+	const float m = 128.0f;
+	float x = (build * (height * (0.47f / m) + 0.4f)) / m + height * (0.23f / m) + 0.4f;
+	float y = (height * (0.77f / m)) + 0.5f;
+	outScale[0] = x;
+	outScale[1] = y;
+	outScale[2] = x;
+}
+
+#define CFL_BODY_MAX_BONES 18
+typedef struct {
+	s32 parentBoneIndex;
+	float pivot[3];
+	u32 category;
+} CFLiBodyBone;
+
+typedef struct {
+	float position[3];
+	float normal[3];
+	u32 boneIndex;
+} CFLiBodyRawVertex;
+
+typedef struct {
+	u32 materialIndex;
+	u32 vertexCount;
+	CFLiBodyRawVertex* vertices;
+	u32 indexCount;
+	const u8* indices;
+} CFLiBodyPart;
+
+typedef struct {
+	u32 nrBones;
+	CFLiBodyBone bones[CFL_BODY_MAX_BONES];
+	u32 headBoneIndex;
+	u32 partCount;
+	CFLiBodyPart parts[CFL_BODY_MAX_PARTS];
+} CFLiBodyFile;
+
+typedef enum {
+	CFLI_BODY_SCALE_XYZ = 0,
+	CFLI_BODY_SCALE_YXZ = 1,
+	CFLI_BODY_SCALE_SCALAR = 2,
+	CFLI_BODY_SCALE_XYZ_YMIN1 = 3,
+	CFLI_BODY_SCALE_NONE = 4,
+} CFLiBodyScaleCategory;
+
+static void cflbFreePart(CFLiBodyPart* part)
+{
+	free(part->vertices);
+}
+
+static bool cflbParse(const u8* data, u32 size, CFLiBodyFile* out)
+{
+	memset(out, 0, sizeof(*out));
+	if (size < 12 || memcmp(data, "CFLB", 4) != 0) {
+		dbglog("cflbParse: bad magic or file too small\n");
+		return false;
+	}
+	u32 p = 4;
+	u32 version;
+	memcpy(&version, data + p, 4); p += 4;
+	if (version != 2) {
+		dbglog("cflbParse: unsupported version %lu\n", (unsigned long)version);
+		return false;
+	}
+	u32 nrBones;
+	memcpy(&nrBones, data + p, 4); p += 4;
+	if (nrBones > CFL_BODY_MAX_BONES) {
+		dbglog("cflbParse: nrBones %lu exceeds CFL_BODY_MAX_BONES\n", (unsigned long)nrBones);
+		return false;
+	}
+	out->nrBones = nrBones;
+	for (u32 i = 0; i < nrBones; i++) {
+		if (p + 20 > size) { dbglog("cflbParse: truncated bone table\n"); return false; }
+		CFLiBodyBone* bone = &out->bones[i];
+		memcpy(&bone->parentBoneIndex, data + p, 4); p += 4;
+		memcpy(bone->pivot, data + p, sizeof(bone->pivot)); p += sizeof(bone->pivot);
+		memcpy(&bone->category, data + p, 4); p += 4;
+	}
+	if (p + 8 > size) { dbglog("cflbParse: truncated header tail\n"); return false; }
+	memcpy(&out->headBoneIndex, data + p, 4); p += 4;
+	u32 partCount;
+	memcpy(&partCount, data + p, 4); p += 4;
+	if (partCount > CFL_BODY_MAX_PARTS) {
+		dbglog("cflbParse: partCount %lu exceeds CFL_BODY_MAX_PARTS\n", (unsigned long)partCount);
+		return false;
+	}
+	out->partCount = partCount;
+
+	for (u32 i = 0; i < partCount; i++) {
+		if (p + 12 > size) { dbglog("cflbParse: truncated part header\n"); return false; }
+		CFLiBodyPart* part = &out->parts[i];
+		memcpy(&part->materialIndex, data + p, 4); p += 4;
+		memcpy(&part->vertexCount, data + p, 4); p += 4;
+		memcpy(&part->indexCount, data + p, 4); p += 4;
+
+		u32 vertexDataSize = part->vertexCount * (u32)sizeof(CFLiBodyRawVertex);
+		if ((u64)p + vertexDataSize + part->indexCount > size) {
+			dbglog("cflbParse: truncated part %lu data\n", (unsigned long)i);
+			return false;
+		}
+
+		part->vertices = malloc(sizeof(CFLiBodyRawVertex) * part->vertexCount);
+		if (!part->vertices) return false;
+		memcpy(part->vertices, data + p, vertexDataSize);
+		p += vertexDataSize;
+		part->indices = data + p;
+		p += part->indexCount;
+	}
+	return true;
+}
+
+static void cflBoneCategoryScale(u32 category, const float bodyScale[3], float out[3])
+{
+	switch (category) {
+		case CFLI_BODY_SCALE_XYZ:
+			out[0] = bodyScale[0]; out[1] = bodyScale[1]; out[2] = bodyScale[2];
+			break;
+		case CFLI_BODY_SCALE_YXZ:
+			out[0] = bodyScale[1]; out[1] = bodyScale[0]; out[2] = bodyScale[2];
+			break;
+		case CFLI_BODY_SCALE_SCALAR:
+			out[0] = out[1] = out[2] = bodyScale[0];
+			break;
+		case CFLI_BODY_SCALE_XYZ_YMIN1:
+			out[0] = bodyScale[0]; out[1] = bodyScale[1] > 1.0f ? bodyScale[1] : 1.0f; out[2] = bodyScale[2];
+			break;
+		case CFLI_BODY_SCALE_NONE:
+		default:
+			out[0] = out[1] = out[2] = 1.0f;
+			break;
+	}
+}
+
+static void cflComputeScaledBoneTransforms(const CFLiBodyBone* bones, u32 nrBones, const float bodyScale[3],
+	float outWorldPivot[CFL_BODY_MAX_BONES][3], float outOwnScale[CFL_BODY_MAX_BONES][3])
+{
+	for (u32 i = 0; i < nrBones; i++) {
+		cflBoneCategoryScale(bones[i].category, bodyScale, outOwnScale[i]);
+		s32 parent = bones[i].parentBoneIndex;
+		if (parent < 0) {
+			outWorldPivot[i][0] = bones[i].pivot[0];
+			outWorldPivot[i][1] = bones[i].pivot[1];
+			outWorldPivot[i][2] = bones[i].pivot[2];
+		} else {
+			const float* parentPivot = outWorldPivot[parent];
+			const float* parentScale = outOwnScale[parent];
+			float localOffset[3] = {
+				bones[i].pivot[0] - bones[parent].pivot[0],
+				bones[i].pivot[1] - bones[parent].pivot[1],
+				bones[i].pivot[2] - bones[parent].pivot[2],
+			};
+			outWorldPivot[i][0] = parentPivot[0] + parentScale[0] * localOffset[0];
+			outWorldPivot[i][1] = parentPivot[1] + parentScale[1] * localOffset[1];
+			outWorldPivot[i][2] = parentPivot[2] + parentScale[2] * localOffset[2];
+		}
+	}
+}
+
+static void cflBuildBodyPart(CFLBodyModel* body, const CFLiBodyPart* srcPart,
+	const float worldPivot[CFL_BODY_MAX_BONES][3], const float ownScale[CFL_BODY_MAX_BONES][3],
+	const CFLiBodyBone* bones, const float color[3])
+{
+	if (body->partCount >= CFL_BODY_MAX_PARTS) return;
+	CFLBodyPart* part = &body->parts[body->partCount];
+
+	float* positions = malloc(sizeof(float) * 3 * srcPart->vertexCount);
+	float* normals = malloc(sizeof(float) * 3 * srcPart->vertexCount);
+	if (!positions || !normals) { free(positions); free(normals); return; }
+
+	for (u32 v = 0; v < srcPart->vertexCount; v++) {
+		const CFLiBodyRawVertex* rv = &srcPart->vertices[v];
+		u32 b = rv->boneIndex;
+		const float* piv = bones[b].pivot;
+		const float* wp = worldPivot[b];
+		const float* cs = ownScale[b];
+		for (int k = 0; k < 3; k++)
+			positions[v * 3 + k] = wp[k] + cs[k] * (rv->position[k] - piv[k]);
+
+		float nx = rv->normal[0] / cs[0];
+		float ny = rv->normal[1] / cs[1];
+		float nz = rv->normal[2] / cs[2];
+		float len = sqrtf(nx * nx + ny * ny + nz * nz);
+		if (len > 1e-8f) { nx /= len; ny /= len; nz /= len; }
+		normals[v * 3 + 0] = nx; normals[v * 3 + 1] = ny; normals[v * 3 + 2] = nz;
+	}
+
+	CFLModel model;
+	memset(&model, 0, sizeof(model));
+	model.positions = positions;
+	model.normals = normals;
+	model.vertexCount = srcPart->vertexCount;
+
+	static const float noTranslate[3] = { 0.0f, 0.0f, 0.0f };
+	u32 vcount;
+	part->vbo = buildVertices(&model, noTranslate, 1.0f, false, &vcount);
+	part->vertexCount = vcount;
+	part->ibo = linearAlloc(srcPart->indexCount);
+	memcpy(part->ibo, srcPart->indices, srcPart->indexCount);
+	part->indexCount = srcPart->indexCount;
+	part->color[0] = color[0];
+	part->color[1] = color[1];
+	part->color[2] = color[2];
+	body->partCount++;
+
+	free(positions);
+	free(normals);
+}
+
+bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFLBodyModel* outBody)
+{
+	dbglog("CFL_LoadBodyModel: start (bodySize=%lu)\n", (unsigned long)bodySize);
+
+	memset(outBody, 0, sizeof(*outBody));
+	if (!bodyData || !mii) return false;
+
+	CFLiBodyFile file;
+	if (!cflbParse(bodyData, bodySize, &file)) return false;
+
+	cflGetBodyScale(mii->width, mii->height, outBody->bodyScale);
+
+	float worldPivot[CFL_BODY_MAX_BONES][3];
+	float ownScale[CFL_BODY_MAX_BONES][3];
+	cflComputeScaledBoneTransforms(file.bones, file.nrBones, outBody->bodyScale, worldPivot, ownScale);
+
+	if (file.headBoneIndex < file.nrBones) {
+		outBody->hasHeadBone = true;
+		outBody->headBoneWorldMatrix[0] = 1.0f; outBody->headBoneWorldMatrix[1] = 0.0f; outBody->headBoneWorldMatrix[2] = 0.0f;
+		outBody->headBoneWorldMatrix[3] = worldPivot[file.headBoneIndex][0];
+		outBody->headBoneWorldMatrix[4] = 0.0f; outBody->headBoneWorldMatrix[5] = 1.0f; outBody->headBoneWorldMatrix[6] = 0.0f;
+		outBody->headBoneWorldMatrix[7] = worldPivot[file.headBoneIndex][1];
+		outBody->headBoneWorldMatrix[8] = 0.0f; outBody->headBoneWorldMatrix[9] = 0.0f; outBody->headBoneWorldMatrix[10] = 1.0f;
+		outBody->headBoneWorldMatrix[11] = worldPivot[file.headBoneIndex][2];
+	}
+
+	const u8* miiBytes = (const u8*)mii;
+	bool isSpecialMii = (miiBytes[12] & 0x80) == 0;
+	const float* pantsColor = pantsColors[isSpecialMii ? 3 : 0];
+	const float* bodyColor = CFL_GetFavoriteColor(mii->mii_details.shirt_color);
+
+	for (u32 i = 0; i < file.partCount; i++) {
+		CFLiBodyPart* part = &file.parts[i];
+		cflBuildBodyPart(outBody, part, worldPivot, ownScale, file.bones, part->materialIndex == 0 ? bodyColor : pantsColor);
+		cflbFreePart(part);
+	}
+
+	if (outBody->partCount == 0) {
+		dbglog("CFL_LoadBodyModel: no body/pants parts were successfully loaded\n");
+		return false;
+	}
+	dbglog("CFL_LoadBodyModel: done, %lu part(s), hasHeadBone=%d, head world pos=(%.2f,%.2f,%.2f)\n",
+		(unsigned long)outBody->partCount, outBody->hasHeadBone,
+		outBody->headBoneWorldMatrix[3], outBody->headBoneWorldMatrix[7], outBody->headBoneWorldMatrix[11]);
+	return true;
+}
+
+void CFL_DeleteBodyModel(CFLBodyModel* body)
+{
+	for (int i = 0; i < body->partCount; i++) {
+		if (body->parts[i].vbo) linearFree(body->parts[i].vbo);
+		if (body->parts[i].ibo) linearFree(body->parts[i].ibo);
+	}
+	memset(body, 0, sizeof(*body));
+}
+
+void CFL_AttachBody(CFLCharModel* cm, const CFLBodyModel* body)
+{
+	if (cm) cm->attachedBody = body;
+}
+
 bool CFL_Initialize(void)
 {
 	dbglog("Opening CFL_Res.dat system archive...\n");
@@ -1804,6 +2109,7 @@ bool CFL_Initialize(void)
 	uLoc_modelView    = shaderInstanceGetUniformLocation(program.vertexShader, "modelView");
 
 	C3D_LightEnvInit(&s_bakeLightEnv);
+
 	C3D_LightEnvAmbient(&s_bakeLightEnv, 0.0f, 0.0f, 0.0f);
 	C3D_LightInit(&s_bakeLight, &s_bakeLightEnv);
 	C3D_LightAmbient(&s_bakeLight, 1.0f, 1.0f, 1.0f);
@@ -1831,6 +2137,7 @@ void CFL_RebindShader(void)
 
 	C3D_TexEnv* env = C3D_GetTexEnv(0);
 	C3D_TexEnvInit(env);
+
 	C3D_TexEnvSrc(env, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
 	C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
 }
@@ -1843,6 +2150,7 @@ void CFL_Finalize(void)
 	g_cflResBuffer = NULL;
 	g_cflData = NULL;
 	g_cflSize = 0;
+
 	g_cflDbCacheValid = false;
 }
 
@@ -1925,6 +2233,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	{
 		CFLModel canvasModel;
 		if (loadResModel(cflData, cflSize, CFL_SECTION_MASK, mii.face_style.shape, NULL, &canvasModel)) {
+
 			int requestedCount = 0, bakedCount = 0;
 			u32 vramBeforeBakes = vramSpaceFree();
 			dbglog("CFL_InitCharModel: VRAM free before baking = %lu bytes (%.1f KB)\n", (unsigned long)vramBeforeBakes, vramBeforeBakes / 1024.0f);
@@ -1937,6 +2246,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 					cm->maskTexBaked[i] = true;
 					bakedCount++;
 				} else {
+
 					dbglogErr("CFL_InitCharModel: FAILED to bake MASK for expression %s (likely VRAM exhaustion)\n", CFL_GetExpressionName((CFLExpression)i));
 					dbglogVramStats("  at failure", true);
 				}
@@ -2003,6 +2313,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		};
 		u8 glassColorIndex = mii.glasses_details.color;
 		if (glassColorIndex >= 8) glassColorIndex = 0;
+
 		loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_GLASSES, 0,
 			CFL_SECTION_GLASSES_TEX, mii.glasses_details.style, glassPos, glassScale, false,
 			glassColors[glassColorIndex], NULL, true, false, false, "Glasses");
@@ -2019,6 +2330,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		dbglog("CFL_InitCharModel: recent-DB add skipped - author is on this console's own local nn::ubl blocklist (CFLi_ReplaceProhibitedCharInfo)\n");
 	}
 
+	dbglog("CFL_InitCharModel: complete\n");
 	return true;
 }
 
@@ -2083,6 +2395,7 @@ static void ensureDefaultShaderInit(void)
 	if (s_defaultLightReady) return;
 	s_defaultLightReady = true;
 	C3D_LightEnvInit(&s_defaultLightEnv);
+
 	C3D_LightEnvAmbient(&s_defaultLightEnv, 0.0f, 0.0f, 0.0f);
 	LightLut_Phong(&s_defaultSpecularLut, 8.0f);
 	C3D_LightEnvLut(&s_defaultLightEnv, GPU_LUT_D0, GPU_LUTINPUT_NH, false, &s_defaultSpecularLut);
@@ -2118,26 +2431,187 @@ void CFL_SetDefaultMaterial(const float color[3], bool noSpecular)
 	C3D_LightEnvMaterial(&s_defaultLightEnv, &mtl);
 }
 
+static void cflIconDrawCharModelParts(CFLCharModel* cm, CFLExpression expression, const CFLIconSetting* setting, const C3D_Mtx* iconProjection, const C3D_Mtx* modelView)
+{
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, iconProjection);
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  modelView);
+
+	C3D_Tex* iconMaskTex = NULL;
+	if (expression >= 0 && expression < CFL_EXPRESSION_COUNT && cm->maskTexBaked[expression])
+		iconMaskTex = &cm->maskTexForExpr[expression];
+
+	CFLIconCustomCallback customCallback = setting ? setting->customCallback : NULL;
+	void* customArgument = setting ? setting->customArgument : NULL;
+
+	for (int pass = 0; pass < 2; pass++) {
+		bool texturedPass = (pass == 1);
+		C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+		for (int i = 0; i < cm->partCount; i++) {
+			const CFLPart* part = &cm->parts[i];
+			if (part->hasTexture != texturedPass) continue;
+
+			C3D_Tex* texToUse = (iconMaskTex && i == cm->maskPartIndex) ? iconMaskTex : (C3D_Tex*)&part->tex;
+
+			C3D_DepthTest(true, GPU_LEQUAL, part->depthWrite ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
+			C3D_BufInfo* bufInfo = C3D_GetBufInfo();
+			BufInfo_Init(bufInfo);
+			BufInfo_Add(bufInfo, part->vbo, sizeof(Vertex), 3, 0x210);
+
+			if (part->hasTexture) C3D_TexBind(0, texToUse);
+
+			if (customCallback) {
+				customCallback(customArgument, part, iconProjection, modelView);
+			} else {
+				CFL_SetDefaultMaterial(part->color, part->noSpecular);
+
+				C3D_TexEnv* env = C3D_GetTexEnv(0);
+				if (part->hasTexture) {
+					C3D_TexEnvInit(env);
+					if (part->isAlphaOnly) {
+						C3D_TexEnvSrc(env, C3D_RGB, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
+						C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
+					} else {
+						C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_FRAGMENT_PRIMARY_COLOR, 0);
+						C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
+					}
+					C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, 0, 0);
+					C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+				} else {
+					C3D_TexEnvInit(env);
+					C3D_TexEnvSrc(env, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
+					C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+				}
+
+				if (part->capBlend) {
+					C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+					C3D_TexEnvInit(env2);
+					C3D_TexEnvSrc(env2, C3D_RGB, GPU_PREVIOUS, GPU_FRAGMENT_PRIMARY_COLOR, 0);
+					C3D_TexEnvFunc(env2, C3D_RGB, GPU_ADD);
+					C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, 0, 0);
+					C3D_TexEnvFunc(env2, C3D_Alpha, GPU_REPLACE);
+					C3D_DirtyTexEnv(env2);
+				}
+			}
+
+			if (part->useIndices)
+				C3D_DrawElements(GPU_TRIANGLES, part->indexCount, C3D_UNSIGNED_BYTE, part->ibo);
+			else
+				C3D_DrawArrays(GPU_TRIANGLES, 0, part->vertexCount);
+
+			if (part->capBlend) {
+				C3D_TexEnv* env2 = C3D_GetTexEnv(2);
+				C3D_TexEnvInit(env2);
+				C3D_DirtyTexEnv(env2);
+			}
+		}
+	}
+}
+
+static void cflIconDrawBodyParts(const CFLBodyModel* body, const C3D_Mtx* iconProjection, const C3D_Mtx* modelView)
+{
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, iconProjection);
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  modelView);
+
+	C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+	for (int i = 0; i < body->partCount; i++) {
+		const CFLBodyPart* part = &body->parts[i];
+		C3D_DepthTest(true, GPU_LEQUAL, GPU_WRITE_ALL);
+
+		C3D_BufInfo* bufInfo = C3D_GetBufInfo();
+		BufInfo_Init(bufInfo);
+		BufInfo_Add(bufInfo, part->vbo, sizeof(Vertex), 3, 0x210);
+
+		CFL_SetDefaultMaterial(part->color, false);
+
+		C3D_TexEnv* env = C3D_GetTexEnv(0);
+		C3D_TexEnvInit(env);
+		C3D_TexEnvSrc(env, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
+		C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+
+		dbglog("cflIconDrawBodyParts: part %d/%lu vertexCount=%lu indexCount=%lu color=(%.2f,%.2f,%.2f) vbo=%p ibo=%p - about to C3D_DrawElements\n",
+			i, (unsigned long)body->partCount, (unsigned long)part->vertexCount, (unsigned long)part->indexCount,
+			part->color[0], part->color[1], part->color[2], (void*)part->vbo, (void*)part->ibo);
+		C3D_DrawElements(GPU_TRIANGLES, part->indexCount, C3D_UNSIGNED_BYTE, part->ibo);
+		dbglog("cflIconDrawBodyParts: part %d C3D_DrawElements returned (queued, not necessarily executed yet)\n", i);
+	}
+	dbglog("cflIconDrawBodyParts: all %lu part(s) queued\n", (unsigned long)body->partCount);
+}
+
+#define CFL_ICON_TARGET_CACHE_SIZE 4
+typedef struct {
+	C3D_Tex* texPtr;
+	int size;
+	C3D_RenderTarget* target;
+	bool valid;
+} CflIconTargetCacheEntry;
+static CflIconTargetCacheEntry s_iconTargetCache[CFL_ICON_TARGET_CACHE_SIZE];
+
+static C3D_RenderTarget* cflAcquireIconTarget(C3D_Tex* outIcon, int iconSize, bool* outIsFresh)
+{
+	for (int i = 0; i < CFL_ICON_TARGET_CACHE_SIZE; i++) {
+		if (s_iconTargetCache[i].valid && s_iconTargetCache[i].texPtr == outIcon && s_iconTargetCache[i].size == iconSize) {
+			*outIsFresh = false;
+			return s_iconTargetCache[i].target;
+		}
+	}
+
+	if (outIcon->data) C3D_TexDelete(outIcon);
+	if (!C3D_TexInitVRAM(outIcon, iconSize, iconSize, GPU_RGBA8)) return NULL;
+	C3D_RenderTarget* target = C3D_RenderTargetCreateFromTex(outIcon, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
+	if (!target) { C3D_TexDelete(outIcon); return NULL; }
+
+	int slot = -1;
+	for (int i = 0; i < CFL_ICON_TARGET_CACHE_SIZE; i++) if (!s_iconTargetCache[i].valid) { slot = i; break; }
+	if (slot < 0) {
+
+		C3D_RenderTargetDelete(s_iconTargetCache[0].target);
+		slot = 0;
+	}
+	s_iconTargetCache[slot].texPtr = outIcon;
+	s_iconTargetCache[slot].size = iconSize;
+	s_iconTargetCache[slot].target = target;
+	s_iconTargetCache[slot].valid = true;
+	*outIsFresh = true;
+	return target;
+}
+
+void CFL_ReleaseIconTarget(C3D_Tex* outIcon)
+{
+	for (int i = 0; i < CFL_ICON_TARGET_CACHE_SIZE; i++) {
+		if (s_iconTargetCache[i].valid && s_iconTargetCache[i].texPtr == outIcon) {
+
+			C3D_FrameSync();
+			C3D_RenderTargetDelete(s_iconTargetCache[i].target);
+			s_iconTargetCache[i].valid = false;
+			break;
+		}
+	}
+	if (outIcon->data) C3D_TexDelete(outIcon);
+}
+
 bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon)
 {
+
+	const CFLBodyModel* body = cm ? cm->attachedBody : NULL;
+
+	dbglog("CFL_CommandMakeModelIcon: start iconSize=%d hasBody=%d bodyPartCount=%lu\n",
+		iconSize, body != NULL, body ? (unsigned long)body->partCount : 0);
+
 	if (!cm || !cm->valid || cm->partCount == 0 || iconSize <= 0 || !outIcon) return false;
 	ensureDefaultShaderInit();
 
-	if (!C3D_TexInitVRAM(outIcon, iconSize, iconSize, GPU_RGBA8)) {
-		dbglog("CFL_CommandMakeModelIcon: C3D_TexInitVRAM failed (%dx%d)\n", iconSize, iconSize);
-		return false;
-	}
-	C3D_RenderTarget* iconTarget = C3D_RenderTargetCreateFromTex(outIcon, GPU_TEXFACE_2D, 0, GPU_RB_DEPTH24_STENCIL8);
+	bool isFreshTarget = false;
+	C3D_RenderTarget* iconTarget = cflAcquireIconTarget(outIcon, iconSize, &isFreshTarget);
 	if (!iconTarget) {
-		dbglog("CFL_CommandMakeModelIcon: C3D_RenderTargetCreateFromTex failed\n");
-		C3D_TexDelete(outIcon);
+		dbglog("CFL_CommandMakeModelIcon: cflAcquireIconTarget failed (%dx%d)\n", iconSize, iconSize);
 		return false;
 	}
+	dbglog("CFL_CommandMakeModelIcon: using %s render target\n", isFreshTarget ? "freshly created" : "cached/reused");
 
 	C3D_Mtx iconProjection, iconModelView;
 	Mtx_Persp(&iconProjection, C3D_AngleFromDegrees(9.8762f), 1.0f, 500.0f, 1000.0f, false);
 	iconProjection.r[1].y = -iconProjection.r[1].y;
-
 	iconProjection.r[2].x = 0.0f;
 	iconProjection.r[2].y = 0.0f;
 	iconProjection.r[2].z = 3.5f;
@@ -2163,19 +2637,26 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 		clearColor = ((u32)(fc[0] * 255.0f) << 24) | ((u32)(fc[1] * 255.0f) << 16) | ((u32)(fc[2] * 255.0f) << 8) | 0xFF;
 	}
 
-	CFLIconCustomCallback customCallback = setting ? setting->customCallback : NULL;
-	void* customArgument = setting ? setting->customArgument : NULL;
+	bool hasCustomCallback = setting && setting->customCallback;
 
+	dbglog("CFL_CommandMakeModelIcon: about to draw (body first, then head)\n");
+
+	dbglog("CFL_CommandMakeModelIcon: about to C3D_FrameBegin(SYNCDRAW)\n");
 	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+		dbglog("CFL_CommandMakeModelIcon: C3D_FrameBegin returned\n");
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
+		dbglog("CFL_CommandMakeModelIcon: GPUREG_FRAMEBUFFER_INVALIDATE written\n");
 		if (bgType != CFL_ICON_BG_NO_CLEAR)
 			C3D_RenderTargetClear(iconTarget, C3D_CLEAR_ALL, clearColor, 0xFFFFFF00);
+		dbglog("CFL_CommandMakeModelIcon: C3D_RenderTargetClear returned\n");
 		C3D_FrameDrawOn(iconTarget);
+		dbglog("CFL_CommandMakeModelIcon: C3D_FrameDrawOn returned\n");
 		C3D_SetViewport(0, 0, iconSize, iconSize);
-		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, &iconProjection);
-		C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  &iconModelView);
-		if (!customCallback) C3D_LightEnvBind(&s_defaultLightEnv);
+		dbglog("CFL_CommandMakeModelIcon: C3D_SetViewport returned\n");
+		if (!hasCustomCallback) C3D_LightEnvBind(&s_defaultLightEnv);
+		dbglog("CFL_CommandMakeModelIcon: C3D_LightEnvBind returned\n");
 		C3D_CullFace(GPU_CULL_NONE);
+		dbglog("CFL_CommandMakeModelIcon: C3D_CullFace returned\n");
 
 		{
 			C3D_TexEnv* env1 = C3D_GetTexEnv(1);
@@ -2189,87 +2670,34 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 			C3D_TexEnvInit(env2);
 			C3D_DirtyTexEnv(env2);
 		}
+		dbglog("CFL_CommandMakeModelIcon: TexEnv1/2 setup returned\n");
 
-		C3D_Tex* iconMaskTex = NULL;
-		if (expression >= 0 && expression < CFL_EXPRESSION_COUNT && cm->maskTexBaked[expression])
-			iconMaskTex = &cm->maskTexForExpr[expression];
+		const float CFL_ICON_BODY_SCALE = 1.0f;
 
-		for (int pass = 0; pass < 2; pass++) {
-			bool texturedPass = (pass == 1);
-			C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
-			for (int i = 0; i < cm->partCount; i++) {
-				const CFLPart* part = &cm->parts[i];
-				if (part->hasTexture != texturedPass) continue;
-
-				C3D_Tex* texToUse = (iconMaskTex && i == cm->maskPartIndex) ? iconMaskTex : (C3D_Tex*)&part->tex;
-
-				dbglog("CFL_CommandMakeModelIcon: part %d/%d hasTexture=%d isAlphaOnly=%d needsTint=%d depthWrite=%d color=(%.2f,%.2f,%.2f) vtx=%lu idx=%lu%s\n",
-					i, cm->partCount, part->hasTexture, part->isAlphaOnly, part->needsTint, part->depthWrite,
-					part->color[0], part->color[1], part->color[2],
-					(unsigned long)part->vertexCount, (unsigned long)part->indexCount,
-					(i == cm->maskPartIndex) ? " [MASK]" : "");
-				if (part->hasTexture)
-					dbglog("  texToUse: %ux%u fmt=%u\n", texToUse->width, texToUse->height, texToUse->fmt);
-
-				C3D_DepthTest(true, GPU_LEQUAL, part->depthWrite ? GPU_WRITE_ALL : GPU_WRITE_COLOR);
-				C3D_BufInfo* bufInfo = C3D_GetBufInfo();
-				BufInfo_Init(bufInfo);
-				BufInfo_Add(bufInfo, part->vbo, sizeof(Vertex), 3, 0x210);
-
-				if (part->hasTexture) C3D_TexBind(0, texToUse);
-
-				if (customCallback) {
-					customCallback(customArgument, part, &iconProjection, &iconModelView);
-				} else {
-					CFL_SetDefaultMaterial(part->color, part->noSpecular);
-
-					C3D_TexEnv* env = C3D_GetTexEnv(0);
-					if (part->hasTexture) {
-						C3D_TexEnvInit(env);
-						if (part->isAlphaOnly) {
-							C3D_TexEnvSrc(env, C3D_RGB, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
-							C3D_TexEnvFunc(env, C3D_RGB, GPU_REPLACE);
-						} else {
-							C3D_TexEnvSrc(env, C3D_RGB, GPU_TEXTURE0, GPU_FRAGMENT_PRIMARY_COLOR, 0);
-							C3D_TexEnvFunc(env, C3D_RGB, GPU_MODULATE);
-						}
-						C3D_TexEnvSrc(env, C3D_Alpha, GPU_TEXTURE0, 0, 0);
-						C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
-					} else {
-						C3D_TexEnvInit(env);
-						C3D_TexEnvSrc(env, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
-						C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
-					}
-
-					if (part->capBlend) {
-						C3D_TexEnv* env2 = C3D_GetTexEnv(2);
-						C3D_TexEnvInit(env2);
-						C3D_TexEnvSrc(env2, C3D_RGB, GPU_PREVIOUS, GPU_FRAGMENT_PRIMARY_COLOR, 0);
-						C3D_TexEnvFunc(env2, C3D_RGB, GPU_ADD);
-						C3D_TexEnvSrc(env2, C3D_Alpha, GPU_PREVIOUS, 0, 0);
-						C3D_TexEnvFunc(env2, C3D_Alpha, GPU_REPLACE);
-						C3D_DirtyTexEnv(env2);
-					}
-				}
-
-				if (part->useIndices)
-					C3D_DrawElements(GPU_TRIANGLES, part->indexCount, C3D_UNSIGNED_BYTE, part->ibo);
-				else
-					C3D_DrawArrays(GPU_TRIANGLES, 0, part->vertexCount);
-
-				if (part->capBlend) {
-					C3D_TexEnv* env2 = C3D_GetTexEnv(2);
-					C3D_TexEnvInit(env2);
-					C3D_DirtyTexEnv(env2);
-				}
+		if (body && body->partCount > 0) {
+			C3D_Mtx bodyIconView = iconModelView;
+			if (body->hasHeadBone) {
+				const float* m = body->headBoneWorldMatrix;
+				dbglog("CFL_CommandMakeModelIcon: headBoneWorldMatrix translate=(%.4f,%.4f,%.4f)\n", m[3], m[7], m[11]);
+				Mtx_Translate(&bodyIconView, -m[3] * CFL_ICON_BODY_SCALE, -m[7] * CFL_ICON_BODY_SCALE, -m[11] * CFL_ICON_BODY_SCALE, true);
 			}
+			Mtx_Scale(&bodyIconView, CFL_ICON_BODY_SCALE, CFL_ICON_BODY_SCALE, CFL_ICON_BODY_SCALE);
+			cflIconDrawBodyParts(body, &iconProjection, &bodyIconView);
+			dbglog("CFL_CommandMakeModelIcon: cflIconDrawBodyParts returned\n");
 		}
+
+		C3D_Mtx headModelView = iconModelView;
+		dbglog("CFL_CommandMakeModelIcon: about to draw head via cflIconDrawCharModelParts\n");
+		cflIconDrawCharModelParts(cm, expression, setting, &iconProjection, &headModelView);
+		dbglog("CFL_CommandMakeModelIcon: cflIconDrawCharModelParts (head) returned\n");
+
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
 	C3D_FrameEnd(0);
 
-	C3D_RenderTargetDelete(iconTarget);
+	dbglog("CFL_CommandMakeModelIcon: C3D_FrameEnd returned, finishing up\n");
+
 	C3D_TexSetFilter(outIcon, GPU_LINEAR, GPU_LINEAR);
 	C3D_TexSetWrap(outIcon, GPU_CLAMP_TO_EDGE, GPU_CLAMP_TO_EDGE);
+	dbglog("CFL_CommandMakeModelIcon: done\n");
 	return true;
 }
-

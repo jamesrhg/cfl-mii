@@ -8,8 +8,11 @@ parses it, and builds a fully-shaded, textured 3D character model
 (head, hair, face, eyes, eyebrows, mouth, nose, glasses, facial hair)
 from a `MiiData` struct - the same data libctru's Mii Selector applet
 hands you. It can also search/read the console's real Mii database
-(`CFL_DB.dat`) and encode/decode the standard `CFLStoreData` exchange
-format.
+(`CFL_DB.dat`), encode/decode the standard `CFLStoreData` exchange
+format, and optionally attach a full-body model (real Nintendo body
+assets, or your own) to a `CFLCharModel` so both the real-time draw
+path and the icon renderer show head-on-body without any extra API
+surface - see [Body models](#body-models-optional) below.
 
 Reverse-engineered from a retail 3DS title binary's debug info and
 cross-referenced against the real, compiled RFL (Wii) and FFL (Wii U)
@@ -78,6 +81,7 @@ typedef struct {
     int partCount;
     MiiData mii;
     bool valid;
+    const CFLBodyModel* attachedBody; // NULL by default - see CFL_AttachBody below
     // ...
 } CFLCharModel;
 
@@ -230,6 +234,77 @@ once per part, right before its draw call. Nothing else in this
 library depends on either being called - build your own lighting from
 scratch if you want different shading.
 
+### Body models (optional)
+
+```c
+typedef struct {
+    void* vbo;
+    void* ibo;
+    u32 vertexCount, indexCount;
+    float color[3]; // baked in at CFL_LoadBodyModel time - favoriteColor for the
+                     // body part, gray/gold pants for the pants part
+} CFLBodyPart;
+
+#define CFL_BODY_MAX_PARTS 2
+
+typedef struct {
+    CFLBodyPart parts[CFL_BODY_MAX_PARTS]; // body, pants
+    int partCount;
+    bool hasHeadBone;
+    float headBoneWorldMatrix[12]; // 3 rows of 4 (row_i = [Ai0,Ai1,Ai2,ti]) -
+                                    // the real world transform of the body's
+                                    // own "head"/neck attach point
+    float bodyScale[3]; // real nn::mii::detail::GetBodyScale(build,height) -
+                         // how much THIS Mii's own build/height stretches
+                         // the body model from its neutral pose
+} CFLBodyModel;
+
+bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFLBodyModel* outBody);
+void CFL_DeleteBodyModel(CFLBodyModel* body);
+void CFL_AttachBody(CFLCharModel* model, const CFLBodyModel* body);
+
+#define CFL_HEAD_TO_BODY_SCALE (10.0f / 7.0f)
+```
+
+Real Nintendo body-model support - **not part of real CFL at all**
+(confirmed via the decompile: `CFLIconSetting`'s real struct has no
+body field, and nothing in CFL's own real API takes one either).
+Attaching a head to a body is an application-level concern in real Mii
+software too (this mirrors `ariankordi/FFL.js`'s own real
+`attachHeadToBody`), which is why it's opt-in and additive rather than
+baked into `CFL_InitCharModel` itself.
+
+- **`CFL_LoadBodyModel(bodyData, bodySize, mii, &body)`** - parses a
+  body model asset and colors it for `mii` (body = favorite color,
+  pants = gold/gray depending on the Mii's own ID) and scales it per
+  that Mii's own real build/height. `bodyData`/`bodySize` are **not** a
+  standard Nintendo format - they're a small, custom, offline-extracted
+  layout this project calls "CFLB" (magic `"CFLB"`, a flat bone table +
+  per-vertex position/normal/bone-index data), produced once from a
+  real body asset (Nintendo's own `MiiBodyMiddle`-family models, or the
+  small dedicated icon-body asset) via an offline export step - not
+  something this library can parse directly from a stock `.bcmdl`/glTF
+  file. See [cfl-tool](https://github.com/jamesrhg/cfl-tool)'s own
+  `data/` directory for real, ready-to-use `.bin` files and how they're
+  embedded into a 3dsx via `bin2s`. Returns `false` (leaving `*outBody`
+  zeroed) on any parse failure.
+- **`CFL_DeleteBodyModel(body)`** - frees every part's vbo/ibo. Safe on
+  an already-empty or partially-loaded `CFLBodyModel`.
+- **`CFL_AttachBody(model, body)`** - sets (or clears, `body = NULL`)
+  which `CFLBodyModel` this `CFLCharModel`'s icon renders should show
+  alongside its head (see `CFL_CommandMakeModelIcon` below - there's no
+  separate "with body" icon function, `model->attachedBody` is what
+  decides). Does **not** take ownership of `body` - you still manage
+  its real lifetime with `CFL_LoadBodyModel`/`CFL_DeleteBodyModel`
+  yourself, same as every other pointer this library hands back rather
+  than owns. A plain field assignment, safe to call any time.
+- **`CFL_HEAD_TO_BODY_SCALE`** - the real head-to-body size ratio
+  (`10/7`), matching `ariankordi/FFL.js`'s own `attachHeadToBody`
+  exactly (its own real `headToBodyScale` constant) - use this when
+  drawing a body in your own real-time scene (see the example below);
+  `CFL_CommandMakeModelIcon`'s own internal drawing does **not** use
+  it (see the note in Icon rendering below for why).
+
 ### Icon rendering
 
 ```c
@@ -251,6 +326,7 @@ typedef struct {
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* model, CFLExpression expression,
                                int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon);
+void CFL_ReleaseIconTarget(C3D_Tex* outIcon);
 ```
 
 Real CFL function (`CFL_CommandMakeModelIcon`, DWARF-confirmed), and
@@ -260,9 +336,37 @@ camera (not customizable). `expression` must be one of the bits
 declared at `CFL_InitCharModel` time; if it wasn't successfully baked,
 the icon falls back to whichever expression is currently bound rather
 than failing (this function never mutates `model`). `setting` may be
-`NULL` for plain defaults. On success you own `*outIcon` and must
-`C3D_TexDelete` it when done - same as any other `C3D_Tex` this
-library hands back.
+`NULL` for plain defaults.
+
+**Body support**: if `model->attachedBody` is set (via
+`CFL_AttachBody`), the body draws alongside the head automatically -
+there's no separate "make icon with body" function, matching real
+`ariankordi/FFL.js`'s own architecture of attaching a head once and
+reusing one generic render path either way. The head itself is drawn
+completely unchanged (same fixed position/size as the bodyless case) -
+the *body* is what gets positioned, shifted so its own real neck-bone
+world position lands under the head, rather than the head moving to
+meet the body. `CFL_HEAD_TO_BODY_SCALE` is **not** applied here (the
+head is never rescaled for the icon) - real hardware testing found
+the simplest, most direct result (an unscaled head, a repositioned
+body) looked correct, after several attempts at an explicit size ratio
+either over- or under-shot.
+
+**Ownership changed from a plain `C3D_Tex`**: `CFL_CommandMakeModelIcon`
+caches and reuses its own render target internally per `(outIcon,
+iconSize)` pair instead of creating and deleting one on every call
+(repeatedly toggling something like an attached body used to risk a
+real GPU hang tied to deleting a render target that had just had body
+geometry drawn into it - caching sidesteps that entirely). This means
+a plain `C3D_TexDelete(&icon)` is no longer enough to clean up after
+yourself - call **`CFL_ReleaseIconTarget(&icon)`** instead once you're
+genuinely done with that texture (it releases the cached render target
+*and* frees the texture's own VRAM). Safe to call on a texture that
+was never passed to `CFL_CommandMakeModelIcon` at all (a harmless no-op
+cache lookup). You can still call `CFL_CommandMakeModelIcon` again on
+the *same* `C3D_Tex`/size pair as many times as you want (e.g. toggling
+`attachedBody` on and off) without releasing in between - that's the
+whole point of the cache.
 
 ### Mii database access
 
@@ -375,7 +479,10 @@ crashing on - check these rather than assuming success:
 ## Examples
 
 All of these compile and link as-is against nothing but this library,
-libctru, and citro3d - no other project files needed.
+libctru, and citro3d - no other project files needed. The "body model"
+example reuses `drawModelPartsAt` from the first example below it
+rather than duplicating the per-part draw loop - copy both if you want
+that one standalone.
 
 ### Rendering a CharModel with the default shader
 
@@ -391,17 +498,16 @@ typedef struct { float position[3]; float normal[3]; float texcoord[2]; } Vertex
 	GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | \
 	GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
 
-static void drawModel(const CFLCharModel* model, const C3D_Mtx* projection)
+// The actual per-part draw loop, taking an explicit modelView - factored
+// out this way (rather than building a fixed modelView internally) so
+// the "body model" example further down can reuse this unchanged and
+// just hand it a DIFFERENT modelView (the head repositioned to a body's
+// own neck bone) instead of duplicating this whole loop.
+static void drawModelPartsAt(const CFLCharModel* model, const C3D_Mtx* projection, const C3D_Mtx* modelView)
 {
 	CFLShaderLocations loc = CFL_GetShaderLocations();
-
-	C3D_Mtx modelView;
-	Mtx_Identity(&modelView);
-	Mtx_Translate(&modelView, 0.0f, 0.0f, -2.0f, true);
-	Mtx_Scale(&modelView, 0.032f, 0.032f, 0.032f);
-
 	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, loc.projection, projection);
-	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, loc.modelView, &modelView);
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, loc.modelView, modelView);
 
 	CFL_BindDefaultShader();
 
@@ -462,6 +568,15 @@ static void drawModel(const CFLCharModel* model, const C3D_Mtx* projection)
 				C3D_DrawArrays(GPU_TRIANGLES, 0, part->vertexCount);
 		}
 	}
+}
+
+static void drawModel(const CFLCharModel* model, const C3D_Mtx* projection)
+{
+	C3D_Mtx modelView;
+	Mtx_Identity(&modelView);
+	Mtx_Translate(&modelView, 0.0f, 0.0f, -2.0f, true);
+	Mtx_Scale(&modelView, 0.032f, 0.032f, 0.032f);
+	drawModelPartsAt(model, projection, &modelView);
 }
 
 int main(void)
@@ -656,12 +771,13 @@ int main(void)
 	// (CFL_ICON_BG_FAVORITE) - alpha=0 clears to fully transparent.
 	CFLIconSetting setting = { CFL_ICON_BG_DIRECT, { 0.0f, 0.0f, 0.0f, 0.0f }, NULL, NULL };
 
-	C3D_Tex icon;
+	C3D_Tex icon = {0};
 	if (CFL_CommandMakeModelIcon(&model, CFL_EXPRESSION_NORMAL, 256, &setting, &icon)) {
 		// `icon` is a normal C3D_Tex with real per-pixel alpha - draw it
 		// as an alpha-blended textured quad, same as any other
-		// transparent texture, then release it when done:
-		C3D_TexDelete(&icon); // caller owns it
+		// transparent texture. Release with CFL_ReleaseIconTarget, NOT a
+		// plain C3D_TexDelete - see "Icon rendering" above for why.
+		CFL_ReleaseIconTarget(&icon);
 	}
 
 	CFL_DeleteModel(&model);
@@ -670,6 +786,180 @@ int main(void)
 	gfxExit();
 	return 0;
 }
+```
+
+### Rendering a body model in real time
+
+`CFLBodyPart` is drawn exactly like an untextured `CFLPart` (same
+vbo/ibo/color shape, same default shader) - the only new step is
+positioning the head at the body's own real neck-bone world position
+instead of a fixed offset. This example assumes a body asset has
+already been embedded and exported as `body_bin`/`body_bin_size` (the
+usual devkitPro `bin2s` convention - see
+[cfl-tool](https://github.com/jamesrhg/cfl-tool)'s own `data/`
+directory and `Makefile` for real, ready-to-use body files and how
+they're embedded):
+
+```c
+#include <3ds.h>
+#include <citro3d.h>
+#include "cfl_mii.h"
+#include "body_bin.h" // extern const u8 body_bin[]; extern const u32 body_bin_size;
+
+typedef struct { float position[3]; float normal[3]; float texcoord[2]; } Vertex;
+
+// Draws a CFLBodyModel's own parts (body, pants) - same TEV/blend setup
+// as a plain untextured CFLPart, just looping CFLBodyPart instead.
+static void drawBody(const CFLBodyModel* body, const C3D_Mtx* projection, const C3D_Mtx* modelView)
+{
+	CFLShaderLocations loc = CFL_GetShaderLocations();
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, loc.projection, projection);
+	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, loc.modelView, modelView);
+	CFL_BindDefaultShader();
+
+	C3D_TexEnv* env1 = C3D_GetTexEnv(1);
+	C3D_TexEnvInit(env1);
+	C3D_TexEnvSrc(env1, C3D_RGB, GPU_PREVIOUS, GPU_FRAGMENT_SECONDARY_COLOR, 0);
+	C3D_TexEnvFunc(env1, C3D_RGB, GPU_ADD);
+	C3D_TexEnvSrc(env1, C3D_Alpha, GPU_PREVIOUS, 0, 0);
+	C3D_TexEnvFunc(env1, C3D_Alpha, GPU_REPLACE);
+	C3D_DirtyTexEnv(env1);
+
+	C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+
+	for (int i = 0; i < body->partCount; i++) {
+		const CFLBodyPart* part = &body->parts[i];
+		C3D_DepthTest(true, GPU_GEQUAL, GPU_WRITE_ALL);
+
+		C3D_BufInfo* bufInfo = C3D_GetBufInfo();
+		BufInfo_Init(bufInfo);
+		BufInfo_Add(bufInfo, part->vbo, sizeof(Vertex), 3, 0x210);
+
+		CFL_SetDefaultMaterial(part->color, false);
+
+		C3D_TexEnv* env0 = C3D_GetTexEnv(0);
+		C3D_TexEnvInit(env0);
+		C3D_TexEnvSrc(env0, C3D_Both, GPU_FRAGMENT_PRIMARY_COLOR, 0, 0);
+		C3D_TexEnvFunc(env0, C3D_Both, GPU_REPLACE);
+
+		C3D_DrawElements(GPU_TRIANGLES, part->indexCount, C3D_UNSIGNED_BYTE, part->ibo);
+	}
+}
+
+// Draws body, then the head repositioned to the body's own real neck-bone
+// world position (scaled per-Mii via CFLBodyModel.bodyScale, already baked
+// in by CFL_LoadBodyModel) - CFL_HEAD_TO_BODY_SCALE reconciles the two
+// independently-authored coordinate spaces.
+static void drawModelWithBody(const CFLCharModel* model, const CFLBodyModel* body,
+                               const C3D_Mtx* projection, float scale)
+{
+	C3D_Mtx cameraView;
+	Mtx_Identity(&cameraView);
+	Mtx_Translate(&cameraView, 0.0f, -1.5f, -6.0f, true);
+
+	if (body && body->partCount > 0) {
+		C3D_Mtx bodyView = cameraView;
+		Mtx_Scale(&bodyView, scale, scale, scale);
+		drawBody(body, projection, &bodyView);
+	}
+
+	C3D_Mtx headView = cameraView;
+	if (body && body->hasHeadBone) {
+		const float* m = body->headBoneWorldMatrix; // 3 rows of 4: row_i = [Ai0,Ai1,Ai2,ti]
+		Mtx_Translate(&headView, m[3] * scale, m[7] * scale, m[11] * scale, true);
+		Mtx_Scale(&headView, scale * CFL_HEAD_TO_BODY_SCALE, scale * CFL_HEAD_TO_BODY_SCALE, scale * CFL_HEAD_TO_BODY_SCALE);
+	} else {
+		Mtx_Scale(&headView, scale, scale, scale);
+	}
+	// The same per-part draw loop as "Rendering a CharModel with the
+	// default shader" above, just handed this explicit headView instead
+	// of building its own fixed modelView - see that example for the
+	// full loop body (CFL_GetPartCount/CFL_GetPart, the two-pass
+	// untextured/textured TEV setup, etc).
+	drawModelPartsAt(model, projection, &headView);
+}
+
+int main(void)
+{
+	gfxInitDefault();
+	C3D_Init(C3D_DEFAULT_CMDBUF_SIZE);
+
+	C3D_RenderTarget* target = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
+	C3D_RenderTargetSetOutput(target, GFX_TOP, GFX_LEFT, DISPLAY_TRANSFER_FLAGS);
+
+	if (!CFL_Initialize()) { gfxExit(); return 1; }
+
+	MiiSelectorConf conf;
+	MiiSelectorReturn ret;
+	miiSelectorInit(&conf);
+	miiSelectorLaunch(&conf, &ret);
+
+	CFLCharModel model = {0};
+	CFL_InitCharModel(&model, &ret.mii, CFL_RESOLUTION_128, CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL));
+
+	CFLBodyModel body = {0};
+	bool hasBody = CFL_LoadBodyModel(body_bin, body_bin_size, &ret.mii, &body);
+	// Body load failure is deliberately non-fatal - fall back to
+	// head-only (drawModelWithBody already handles body == NULL).
+
+	C3D_Mtx projection;
+	Mtx_PerspTilt(&projection, C3D_AngleFromDegrees(50.0f), C3D_AspectRatioTop, 0.01f, 1000.0f, false);
+
+	CFL_RebindShader();
+
+	while (aptMainLoop()) {
+		hidScanInput();
+		if (hidKeysDown() & KEY_START) break;
+
+		C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+			C3D_RenderTargetClear(target, C3D_CLEAR_ALL, 0x404040FF, 0);
+			C3D_FrameDrawOn(target);
+			drawModelWithBody(&model, hasBody ? &body : NULL, &projection, 0.032f);
+		C3D_FrameEnd(0);
+	}
+
+	if (hasBody) CFL_DeleteBodyModel(&body);
+	CFL_DeleteModel(&model);
+	CFL_Finalize();
+	C3D_Fini();
+	gfxExit();
+	return 0;
+}
+```
+
+### Making an icon with a body attached
+
+Builds on "Creating a transparent icon" above - the only difference is
+one `CFL_AttachBody` call before rendering. Toggling the body on/off
+later (e.g. a UI button) is just calling `CFL_AttachBody` again
+followed by another `CFL_CommandMakeModelIcon` call on the *same*
+`C3D_Tex` - no need to release and recreate anything in between:
+
+```c
+CFLCharModel model = {0};
+CFL_InitCharModel(&model, &ret.mii, CFL_RESOLUTION_256, CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL));
+
+CFLBodyModel body = {0};
+bool hasBody = CFL_LoadBodyModel(body_bin, body_bin_size, &ret.mii, &body);
+
+C3D_Tex icon = {0};
+
+if (hasBody) {
+	CFL_AttachBody(&model, &body);
+}
+CFL_CommandMakeModelIcon(&model, CFL_EXPRESSION_NORMAL, 256, NULL, &icon);
+// `icon` now shows the head-on-body composite (or just the head, if
+// hasBody was false) - draw it as a textured quad like any C3D_Tex.
+
+// ...later, toggle the body off without reselecting a Mii or
+// reallocating anything - reuses the same cached render target:
+CFL_AttachBody(&model, NULL);
+CFL_CommandMakeModelIcon(&model, CFL_EXPRESSION_NORMAL, 256, NULL, &icon);
+
+// Done for good:
+CFL_ReleaseIconTarget(&icon);
+if (hasBody) CFL_DeleteBodyModel(&body);
+CFL_DeleteModel(&model);
 ```
 
 ## Status

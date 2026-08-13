@@ -47,17 +47,25 @@ typedef struct {
 	u32 vertexCount;
 	u32 indexCount;
 	bool useIndices;
+
 	float color[3];
 	bool hasTexture;
 	C3D_Tex tex;
+
 	bool needsTint;
+
 	bool isAlphaOnly;
+
 	bool depthWrite;
+
 	bool noSpecular;
+
 	bool capBlend;
 } CFLPart;
 
 #define CFL_MAX_PARTS 12
+
+typedef struct CFLBodyModel CFLBodyModel;
 
 typedef struct {
 	CFLPart parts[CFL_MAX_PARTS];
@@ -69,6 +77,8 @@ typedef struct {
 	CFLExpression expression;
 	MiiData mii;
 	bool valid;
+
+	const CFLBodyModel* attachedBody;
 } CFLCharModel;
 
 bool CFL_IsAvailable(void);
@@ -79,9 +89,12 @@ void CFL_Finalize(void);
 
 void CFL_EnableSDDebug(bool enable);
 
+void CFL_FlushSDDebug(void);
 
 void dbglog(const char* fmt, ...);
+
 void dbglogErr(const char* fmt, ...);
+
 void dbglogVramStats(const char* context, bool onScreen);
 
 bool CFL_MakeStoreData(const MiiData* mii, CFLStoreData* out);
@@ -94,7 +107,6 @@ bool CFL_GetOfficialData(u16 index, MiiData* outMii);
 int CFL_GetAvailableOfficialDataNum(void);
 
 bool CFL_GetMyMiiIndex(u16* outIndex);
-
 
 int CFL_GetWorkSize(bool hdModeEnabled);
 
@@ -144,7 +156,34 @@ typedef struct {
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* model, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon);
 
+void CFL_AttachBody(CFLCharModel* model, const CFLBodyModel* body);
+
+typedef struct {
+	void* vbo;
+	void* ibo;
+	u32 vertexCount;
+	u32 indexCount;
+	float color[3];
+} CFLBodyPart;
+
+#define CFL_BODY_MAX_PARTS 2
+
+struct CFLBodyModel {
+	CFLBodyPart parts[CFL_BODY_MAX_PARTS];
+	int partCount;
+	bool hasHeadBone;
+	float headBoneWorldMatrix[12];
+	float bodyScale[3];
+};
+
+bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFLBodyModel* outBody);
+
+void CFL_DeleteBodyModel(CFLBodyModel* body);
+
+#define CFL_HEAD_TO_BODY_SCALE (10.0f / 7.0f)
+
+void CFL_ReleaseIconTarget(C3D_Tex* outIcon);
+
 #ifdef __cplusplus
 }
 #endif
-
