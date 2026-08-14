@@ -66,8 +66,6 @@ typedef struct {
 
 #define CFL_MAX_PARTS 12
 
-typedef struct CFLBodyModel CFLBodyModel;
-
 typedef struct {
 	CFLPart parts[CFL_MAX_PARTS];
 	int partCount;
@@ -78,8 +76,6 @@ typedef struct {
 	CFLExpression expression;
 	MiiData mii;
 	bool valid;
-	
-	const CFLBodyModel* attachedBody;
 } CFLCharModel;
 
 bool CFL_IsAvailable(void);
@@ -156,49 +152,6 @@ typedef struct {
 } CFLIconSetting;
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* model, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon);
-
-void CFL_AttachBody(CFLCharModel* model, const CFLBodyModel* body);
-
-typedef struct {
-	void* vbo;
-	void* ibo;
-	u32 vertexCount;
-	u32 indexCount;
-	float color[3];
-} CFLBodyPart;
-
-#define CFL_BODY_MAX_PARTS 2
-
-#define CFL_BODY_MAX_BONES 18
-
-struct CFLBodyModel {
-	CFLBodyPart parts[CFL_BODY_MAX_PARTS];
-	int partCount;
-	bool hasHeadBone;
-	float headBoneWorldMatrix[12];
-	float bodyScale[3];
-	
-	void* rig;
-};
-
-typedef struct {
-	float translate[3];
-	float rotate[4];
-	float scale[3];
-} CFLBoneLocalPose;
-
-bool CFL_LoadBodyModel(const u8* bodyData, u32 bodySize, const MiiData* mii, CFLBodyModel* outBody);
-
-void CFL_DeleteBodyModel(CFLBodyModel* body);
-
-u32 CFL_GetBodyBoneCount(const CFLBodyModel* body);
-const char* CFL_GetBodyBoneName(const CFLBodyModel* body, u32 boneIndex);
-
-bool CFL_GetBodyBoneBindLocalPose(const CFLBodyModel* body, u32 boneIndex, CFLBoneLocalPose* outPose);
-
-bool CFL_PoseBodyModel(CFLBodyModel* body, const CFLBoneLocalPose* poses, u32 boneCount);
-
-#define CFL_HEAD_TO_BODY_SCALE (10.0f / 7.0f)
 
 #ifdef __cplusplus
 }
