@@ -16,6 +16,22 @@ cross-referenced against the real, compiled RFL (Wii) and FFL (Wii U)
 Mii libraries - real function/type/constant names throughout, not
 invented ones, wherever the decompile could confirm them.
 
+## Building and using as a library
+
+This repo is a static library. With devkitARM/devkitPro installed:
+
+```
+make            # builds lib/libCFL.a
+make install    # copies include/ and lib/ into $DEVKITPRO/portlibs/3ds
+```
+
+Use it from another 3DS project by adding this directory (or the install
+location) to `LIBDIRS`, `-lCFL` before `-lcitro3d`/`-lctru` in `LIBS`, and
+`#include <cfl_mii.h>` (public header in `include/`). The GPU shader is
+assembled into the library, so nothing else needs to be shipped. The companion
+demo app [cfl-tool](https://github.com/jamesrhg/cfl-tool) consumes it exactly
+this way, as a git submodule.
+
 **Head only, on purpose.** This library builds and renders a Mii
 *head* - nothing below the neck. Earlier versions experimented with
 also owning body-model loading/skinning/animation (real IQM files,
@@ -99,6 +115,13 @@ void CFL_EnableSDDebug(bool enable);
   what it's doing and why a part was skipped, if one was.
 
 ### Character models
+
+`CFL_InitCharModelWithHairMode(model, mii, resolution, expressionFlags, mode)`
+adds explicit `CFL_HAIR_NORMAL`, `CFL_HAIR_HAT` and `CFL_HAIR_HIDDEN` modes.
+Hat mode selects the alternate meshes designed to fit beneath an app-owned
+hat; it does not supply a hat model. The original initialization function
+defaults to normal hair. See [`docs/cfl-miiverse-comparison.md`](docs/cfl-miiverse-comparison.md) for
+the Miiverse function mappings and validation limits.
 
 ```c
 typedef struct {

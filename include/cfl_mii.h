@@ -66,6 +66,14 @@ typedef struct {
 
 #define CFL_MAX_PARTS 12
 
+// Low two model-flag bits recovered from CFLi_InitResCharModel and the
+// matching Miiverse FUN_00187458. Names here are reimplementation API names.
+typedef enum {
+	CFL_HAIR_NORMAL = 0,
+	CFL_HAIR_HAT = 1, // alternate meshes fitted beneath an app-supplied hat
+	CFL_HAIR_HIDDEN = 2, // omit cap, hair and forehead together
+} CFLHairMode;
+
 typedef struct {
 	CFLPart parts[CFL_MAX_PARTS];
 	int partCount;
@@ -111,6 +119,10 @@ const float* CFL_GetFavoriteColor(u8 index);
 
 bool CFL_InitCharModel(CFLCharModel* model, const MiiData* mii, CFLResolution resolution, CFLExpressionFlag expressionFlags);
 
+// Explicit hair/hat mode; the original entry point defaults to NORMAL.
+// Rebuild the model to change mode. This does not invent/load a hat mesh.
+bool CFL_InitCharModelWithHairMode(CFLCharModel* model, const MiiData* mii, CFLResolution resolution, CFLExpressionFlag expressionFlags, CFLHairMode hairMode);
+
 void CFL_DeleteModel(CFLCharModel* model);
 
 bool CFL_HasCharModel(const CFLCharModel* model);
@@ -150,6 +162,12 @@ typedef struct {
 	CFLIconCustomCallback customCallback;
 	void* customArgument;
 } CFLIconSetting;
+
+// Reimplementation extension: draw the head into the caller's active icon
+// target, allowing custom bodies/cameras without duplicating CFL's renderer.
+// Call inside a C3D frame with the CFL shader, lighting and attributes set up.
+// Does not allocate, begin/end frames, or own the supplied model/matrices.
+void CFL_DrawIconHead(CFLCharModel* model, CFLExpression expression, const CFLIconSetting* setting, const C3D_Mtx* projection, const C3D_Mtx* modelView);
 
 bool CFL_CommandMakeModelIcon(CFLCharModel* model, CFLExpression expression, int iconSize, const CFLIconSetting* setting, C3D_Tex* outIcon);
 

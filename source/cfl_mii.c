@@ -687,7 +687,9 @@ static u32 snapResolution(u32 raw)
 }
 static Vertex* buildVertices(const CFLModel* model, const float translate[3], float partScale, bool flipX, u32* outCount)
 {
+	*outCount = 0;
 	Vertex* verts = linearAlloc(sizeof(Vertex) * model->vertexCount);
+	if (!verts) return NULL;
 	for (u32 i = 0; i < model->vertexCount; i++) {
 		float px = model->positions[i * 3 + 0];
 		float py = model->positions[i * 3 + 1];
@@ -724,6 +726,7 @@ static void addPart(CFLCharModel* cm, const CFLModel* model, const float transla
 
 	u32 count;
 	part->vbo = buildVertices(model, translate, partScale, flipX, &count);
+	if (!part->vbo) { memset(part, 0, sizeof(*part)); cm->partCount--; return; }
 	part->vertexCount = count;
 	part->color[0] = color[0];
 	part->color[1] = color[1];
@@ -738,6 +741,12 @@ static void addPart(CFLCharModel* cm, const CFLModel* model, const float transla
 
 	if (model->indices && model->indexCount >= 3) {
 		part->ibo = linearAlloc(model->indexCount);
+		if (!part->ibo) {
+			linearFree(part->vbo);
+			memset(part, 0, sizeof(*part));
+			cm->partCount--;
+			return;
+		}
 		memcpy(part->ibo, model->indices, model->indexCount);
 		part->indexCount = model->indexCount;
 		part->useIndices = true;
@@ -816,6 +825,12 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 	Part* part = &cm->parts[cm->partCount++];
 	u32 count;
 	part->vbo = buildVertices(&model, translate, partScale, flipX, &count);
+	if (!part->vbo) {
+		memset(part, 0, sizeof(*part));
+		cm->partCount--;
+		freeResModel(&model);
+		return;
+	}
 	part->vertexCount = count;
 	bool needsTint = tex.format < CFL_TEXFMT_RG8;
 	
@@ -838,6 +853,13 @@ static void loadTexturedPart(CFLCharModel* cm, const u8* cflData, u32 cflSize,
 
 	if (model.indices && model.indexCount >= 3) {
 		part->ibo = linearAlloc(model.indexCount);
+		if (!part->ibo) {
+			linearFree(part->vbo);
+			memset(part, 0, sizeof(*part));
+			cm->partCount--;
+			freeResModel(&model);
+			return;
+		}
 		memcpy(part->ibo, model.indices, model.indexCount);
 		part->indexCount = model.indexCount;
 		part->useIndices = true;
@@ -888,6 +910,7 @@ static int addTexturedPart(CFLCharModel* cm, const CFLModel* model, const float 
 	Part* part = &cm->parts[cm->partCount++];
 	u32 count;
 	part->vbo = buildVertices(model, translate, partScale, flipX, &count);
+	if (!part->vbo) { memset(part, 0, sizeof(*part)); cm->partCount--; return -1; }
 	part->vertexCount = count;
 	part->color[0] = part->color[1] = part->color[2] = 1.0f;
 	part->needsTint = false;
@@ -897,6 +920,12 @@ static int addTexturedPart(CFLCharModel* cm, const CFLModel* model, const float 
 	part->capBlend = false;
 	if (model->indices && model->indexCount >= 3) {
 		part->ibo = linearAlloc(model->indexCount);
+		if (!part->ibo) {
+			linearFree(part->vbo);
+			memset(part, 0, sizeof(*part));
+			cm->partCount--;
+			return -1;
+		}
 		memcpy(part->ibo, model->indices, model->indexCount);
 		part->indexCount = model->indexCount;
 		part->useIndices = true;
@@ -1004,10 +1033,12 @@ static void drawDecalVerts(const Vertex verts[4], const CFLTexture* tex, const f
 		verts[2].position[0], verts[2].position[1], verts[3].position[0], verts[3].position[1]);
 
 	void* vbo = linearAlloc(sizeof(Vertex) * 4);
+	if (!vbo) return;
 	memcpy(vbo, scaledVerts, sizeof(Vertex) * 4);
 
 	static const u8 quadIndices[6] = { 0, 1, 2, 0, 2, 3 };
 	void* ibo = linearAlloc(sizeof(quadIndices));
+	if (!ibo) { linearFree(vbo); return; }
 	memcpy(ibo, quadIndices, sizeof(quadIndices));
 
 	C3D_Tex gpuTex;
@@ -1089,10 +1120,12 @@ static void drawDualColorDecal(const MaskPartsDesc* d, const CFLTexture* tex, co
 		verts[2].position[0], verts[2].position[1], verts[3].position[0], verts[3].position[1]);
 
 	void* vbo = linearAlloc(sizeof(Vertex) * 4);
+	if (!vbo) return;
 	memcpy(vbo, scaledVerts, sizeof(Vertex) * 4);
 
 	static const u8 quadIndices[6] = { 0, 1, 2, 0, 2, 3 };
 	void* ibo = linearAlloc(sizeof(quadIndices));
+	if (!ibo) { linearFree(vbo); return; }
 	memcpy(ibo, quadIndices, sizeof(quadIndices));
 
 	C3D_Tex gpuTex;
@@ -1890,7 +1923,14 @@ bool CFL_HasCharModel(const CFLCharModel* cm)
 
 bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution resolution, CFLExpressionFlag expressionFlags)
 {
-	if (!cm) return false;
+	return CFL_InitCharModelWithHairMode(cm, miiIn, resolution, expressionFlags, CFL_HAIR_NORMAL);
+}
+
+bool CFL_InitCharModelWithHairMode(CFLCharModel* cm, const MiiData* miiIn, CFLResolution resolution, CFLExpressionFlag expressionFlags, CFLHairMode hairMode)
+{
+	if (!cm || !miiIn || (unsigned)hairMode > CFL_HAIR_HIDDEN) return false;
+	// Copy before clearing: callers may rebuild directly from &cm->mii.
+	MiiData mii = *miiIn;
 	if (!g_cflData) {
 		dbglog("CFL_InitCharModel: called before a successful CFL_Initialize()\n");
 		return false;
@@ -1905,6 +1945,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	clearParts(cm);
 	cm->valid = false;
 
+	expressionFlags &= CFL_EXPRESSION_FLAG_ALL;
 	if (expressionFlags == 0) {
 		dbglog("CFL_InitCharModel: expressionFlags must have at least one bit set (matches CFL's own CFLi_GetExpressionCount(...) > 0 assert) - defaulting to NORMAL only.\n");
 		expressionFlags = CFL_EXPRESSION_FLAG(CFL_EXPRESSION_NORMAL);
@@ -1918,7 +1959,6 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		}
 	}
 
-	MiiData mii = *miiIn;
 	dbglog("face shape=%u skinColor=%u hair style=%u color=%u flip=%u sex=%u(%s) favColor=%u\n",
 		mii.face_style.shape, mii.face_style.skinColor,
 		mii.hair_style, mii.hair_details.color, mii.hair_details.flip,
@@ -1932,7 +1972,7 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 	if (hairColorIndex >= 8) hairColorIndex = 0;
 	u8 favColorIndex = mii.mii_details.shirt_color;
 
-	u32 hairIndex = (u32)mii.hair_style * 2;
+	u32 hairIndex = (u32)mii.hair_style * 2 + (hairMode == CFL_HAIR_HAT);
 	dbglog("Hair index: rawStyle=%u -> %lu\n", mii.hair_style, (unsigned long)hairIndex);
 
 	CFLFaceAnchors anchors;
@@ -1951,6 +1991,8 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		logNormalLightStats("FACE", &faceModel);
 		freeResModel(&faceModel);
 	}
+	// A failed face allocation must not produce a supposedly valid icon.
+	if (cm->partCount == 0) return false;
 
 	{
 		CFLModel canvasModel;
@@ -1996,14 +2038,16 @@ bool CFL_InitCharModel(CFLCharModel* cm, const MiiData* miiIn, CFLResolution res
 		}
 	}
 
-	loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_CAP, hairIndex, CFL_SECTION_CAPTEX, mii.hair_style,
-		anchors.hair, 1.0f, mii.hair_details.flip != 0,
-		CFL_GetFavoriteColor(favColorIndex), NULL, true, false, true, "Cap");
+	if (hairMode != CFL_HAIR_HIDDEN) {
+		loadTexturedPart(cm, cflData, cflSize, CFL_SECTION_CAP, hairIndex, CFL_SECTION_CAPTEX, mii.hair_style,
+			anchors.hair, 1.0f, mii.hair_details.flip != 0,
+			CFL_GetFavoriteColor(favColorIndex), NULL, true, false, true, "Cap");
 
-	loadPart(cm, cflData, cflSize, CFL_SECTION_HAIR, hairIndex, anchors.hair, 1.0f, mii.hair_details.flip != 0,
-		hairColors[hairColorIndex], false, "Hair");
-	loadPart(cm, cflData, cflSize, CFL_SECTION_FOREHEAD, hairIndex, anchors.hair, 1.0f, mii.hair_details.flip != 0,
-		skinColors[skinIndex], false, "Forehead");
+		loadPart(cm, cflData, cflSize, CFL_SECTION_HAIR, hairIndex, anchors.hair, 1.0f, mii.hair_details.flip != 0,
+			hairColors[hairColorIndex], false, "Hair");
+		loadPart(cm, cflData, cflSize, CFL_SECTION_FOREHEAD, hairIndex, anchors.hair, 1.0f, mii.hair_details.flip != 0,
+			skinColors[skinIndex], false, "Forehead");
+	}
 
 	if (mii.beard_details.style < 4) {
 		u8 beardColorIndex = mii.beard_details.color;
@@ -2153,8 +2197,9 @@ void CFL_SetDefaultMaterial(const float color[3], bool noSpecular)
 	C3D_LightEnvMaterial(&s_defaultLightEnv, &mtl);
 }
 
-static void cflIconDrawCharModelParts(CFLCharModel* cm, CFLExpression expression, const CFLIconSetting* setting, const C3D_Mtx* iconProjection, const C3D_Mtx* modelView)
+void CFL_DrawIconHead(CFLCharModel* cm, CFLExpression expression, const CFLIconSetting* setting, const C3D_Mtx* iconProjection, const C3D_Mtx* modelView)
 {
+	if (!cm || !cm->valid || !iconProjection || !modelView) return;
 	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_projection, iconProjection);
 	C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER, uLoc_modelView,  modelView);
 
@@ -2167,7 +2212,9 @@ static void cflIconDrawCharModelParts(CFLCharModel* cm, CFLExpression expression
 
 	for (int pass = 0; pass < 2; pass++) {
 		bool texturedPass = (pass == 1);
-		C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA);
+		// Separate RGB blending from coverage accumulation. Using SRC_ALPHA
+		// for alpha punches translucent holes in opaque skin beneath MASK.
+		C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_SRC_ALPHA, GPU_ONE_MINUS_SRC_ALPHA, GPU_ONE, GPU_ONE_MINUS_SRC_ALPHA);
 		for (int i = 0; i < cm->partCount; i++) {
 			const CFLPart* part = &cm->parts[i];
 			if (part->hasTexture != texturedPass) continue;
@@ -2234,7 +2281,8 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 	
 	dbglog("CFL_CommandMakeModelIcon: start iconSize=%d\n", iconSize);
 
-	if (!cm || !cm->valid || cm->partCount == 0 || iconSize <= 0 || !outIcon) return false;
+	if (!cm || !cm->valid || cm->partCount == 0 || iconSize < 8 || iconSize > 1024 ||
+	    (iconSize & (iconSize - 1)) != 0 || !outIcon) return false;
 	ensureDefaultShaderInit();
 
 	if (outIcon->data) C3D_TexDelete(outIcon);
@@ -2282,7 +2330,11 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 	dbglog("CFL_CommandMakeModelIcon: about to draw head\n");
 
 	dbglog("CFL_CommandMakeModelIcon: about to C3D_FrameBegin(SYNCDRAW)\n");
-	C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+	if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) {
+		C3D_RenderTargetDelete(iconTarget);
+		C3D_TexDelete(outIcon);
+		return false;
+	}
 		dbglog("CFL_CommandMakeModelIcon: C3D_FrameBegin returned\n");
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_INVALIDATE, 1);
 		dbglog("CFL_CommandMakeModelIcon: GPUREG_FRAMEBUFFER_INVALIDATE written\n");
@@ -2314,7 +2366,7 @@ bool CFL_CommandMakeModelIcon(CFLCharModel* cm, CFLExpression expression, int ic
 
 		C3D_Mtx headModelView = iconModelView;
 		dbglog("CFL_CommandMakeModelIcon: about to draw head via cflIconDrawCharModelParts\n");
-		cflIconDrawCharModelParts(cm, expression, setting, &iconProjection, &headModelView);
+		CFL_DrawIconHead(cm, expression, setting, &iconProjection, &headModelView);
 		dbglog("CFL_CommandMakeModelIcon: cflIconDrawCharModelParts (head) returned\n");
 
 		GPUCMD_AddWrite(GPUREG_FRAMEBUFFER_FLUSH, 1);
